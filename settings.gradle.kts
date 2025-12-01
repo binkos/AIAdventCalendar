@@ -1,2 +1,2 @@
-rootProject.name = "AIchallenge"
+rootProject.name = "AIAdventCalendar"
 

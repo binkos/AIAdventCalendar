@@ -1,15 +1,19 @@
 package com.aiadventcalendar.desktop
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -18,17 +22,25 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import com.aiadventcalendar.common.AgentService
 import kotlinx.coroutines.launch
+
+data class ChatMessage(
+    val text: String,
+    val isUser: Boolean
+)
 
 fun main() = application {
     val apiKey: String = System.getenv("OPENAI_API_KEY")
@@ -52,17 +64,24 @@ fun main() = application {
 
 @Composable
 fun App(agentService: AgentService) {
-    var questionText by remember { mutableStateOf("") }
-    var answerText by remember { mutableStateOf("") }
+    var inputText by remember { mutableStateOf("") }
+    var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
 
     MaterialTheme {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "AI Advent Calendar",
@@ -70,82 +89,123 @@ fun App(agentService: AgentService) {
                 modifier = Modifier.padding(bottom = 8.dp)
             )
 
-            Card(
+            LazyColumn(
+                state = listState,
                 modifier = Modifier
+                    .weight(1f)
                     .fillMaxWidth()
-                    .weight(1f),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
-                ) {
-                    Text(
-                        text = "Answer:",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
-
-                    if (answerText.isBlank() && !isLoading) {
+                if (messages.isEmpty() && !isLoading) {
+                    item {
                         Text(
-                            text = "Enter a question below and click 'Ask AI' to get an answer.",
+                            text = "Start a conversation by asking a question below.",
                             style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp)
                         )
-                    } else {
-                        Text(
-                            text = answerText,
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
+                    }
+                }
+
+                items(messages) { message ->
+                    ChatBubble(message = message)
+                }
+
+                if (isLoading) {
+                    item {
+                        ChatBubble(
+                            message = ChatMessage(
+                                text = "Thinking...",
+                                isUser = false
+                            ),
+                            isLoading = true
                         )
                     }
                 }
             }
 
-            OutlinedTextField(
-                value = questionText,
-                onValueChange = { questionText = it },
-                label = { Text("Enter your question") },
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading,
-                singleLine = true
-            )
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    label = { Text("Type your message...") },
+                    modifier = Modifier.weight(1f),
+                    enabled = !isLoading,
+                    singleLine = true
+                )
 
-            Button(
-                onClick = {
-                    if (questionText.isNotBlank() && !isLoading) {
-                        isLoading = true
-                        answerText = ""
-                        coroutineScope.launch {
-                            try {
-                                answerText = agentService.getAnswer(questionText)
-                            } catch (e: Exception) {
-                                println(e.message)
-                                answerText = "Error: ${e.message}"
-                            } finally {
-                                isLoading = false
+                Button(
+                    onClick = {
+                        if (inputText.isNotBlank() && !isLoading) {
+                            coroutineScope.launch {
+                                val question = inputText
+                                inputText = ""
+                                messages = messages + ChatMessage(text = question, isUser = true)
+                                isLoading = true
+                                try {
+                                    val answer = agentService.getAnswer(question)
+                                    messages = messages + ChatMessage(text = answer, isUser = false)
+                                } catch (e: Exception) {
+                                    messages = messages + ChatMessage(
+                                        text = "Error: ${e.message}",
+                                        isUser = false
+                                    )
+                                } finally {
+                                    isLoading = false
+                                }
                             }
                         }
+                    },
+                    enabled = !isLoading && inputText.isNotBlank()
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    } else {
+                        Text("Send")
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading && questionText.isNotBlank()
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Loading...")
-                } else {
-                    Text("Ask AI")
                 }
             }
         }
     }
 }
 
+@Composable
+fun ChatBubble(message: ChatMessage, isLoading: Boolean = false) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Card(
+            modifier = Modifier.widthIn(max = 400.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (message.isUser) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.surface
+                }
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Text(
+                text = message.text,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (message.isUser) {
+                    MaterialTheme.colorScheme.onPrimary
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                modifier = Modifier.padding(12.dp)
+            )
+        }
+    }
+}

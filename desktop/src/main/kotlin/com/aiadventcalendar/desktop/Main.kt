@@ -123,6 +123,7 @@ fun App(agentService: AgentService) {
                             try {
                                 answerText = agentService.getAnswer(questionText)
                             } catch (e: Exception) {
+                                println(e.message)
                                 answerText = "Error: ${e.message}"
                             } finally {
                                 isLoading = false

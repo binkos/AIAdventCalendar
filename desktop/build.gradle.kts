@@ -1,0 +1,35 @@
+plugins {
+    kotlin("jvm")
+    id("org.jetbrains.kotlin.plugin.compose") version "2.1.0"
+    id("org.jetbrains.compose") version "1.7.0-alpha01"
+}
+
+dependencies {
+    implementation(project(":common"))
+    implementation(compose.desktop.currentOs)
+    implementation(compose.material3)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
+}
+
+kotlin {
+    jvmToolchain(17)
+}
+
+compose.desktop {
+    application {
+        mainClass = "com.aiadventcalendar.desktop.MainKt"
+        nativeDistributions {
+            targetFormats(
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Dmg,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Msi,
+                org.jetbrains.compose.desktop.application.dsl.TargetFormat.Deb
+            )
+            packageName = "AI Advent Calendar"
+            packageVersion = "1.0.0"
+            macOS {
+                bundleID = "com.aiadventcalendar.desktop"
+            }
+        }
+    }
+}
+

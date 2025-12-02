@@ -34,7 +34,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
-import com.aiadventcalendar.common.AgentService
 import kotlinx.coroutines.launch
 
 data class ChatMessage(
@@ -43,27 +42,24 @@ data class ChatMessage(
 )
 
 fun main() = application {
-    val apiKey: String = System.getenv("OPENAI_API_KEY")
-        ?: throw IllegalStateException("OPENAI_API_KEY environment variable is not set.")
-
-    val agentService = remember { AgentService(apiKey) }
+    val backendUrl: String = System.getenv("BACKEND_URL") ?: "http://localhost:8080"
+    
+    val backendClient = remember { BackendClient(backendUrl) }
     val coroutineScope = rememberCoroutineScope()
 
     Window(
         onCloseRequest = {
-            coroutineScope.launch {
-                agentService.close()
-                exitApplication()
-            }
+            backendClient.close()
+            exitApplication()
         },
         title = "AI Advent Calendar"
     ) {
-        App(agentService = agentService)
+        App(backendClient = backendClient)
     }
 }
 
 @Composable
-fun App(agentService: AgentService) {
+fun App(backendClient: BackendClient) {
     var inputText by remember { mutableStateOf("") }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
@@ -150,7 +146,7 @@ fun App(agentService: AgentService) {
                                 messages = messages + ChatMessage(text = question, isUser = true)
                                 isLoading = true
                                 try {
-                                    val answer = agentService.getAnswer(question)
+                                    val answer = backendClient.getAnswer(question)
                                     messages = messages + ChatMessage(text = answer, isUser = false)
                                 } catch (e: Exception) {
                                     messages = messages + ChatMessage(

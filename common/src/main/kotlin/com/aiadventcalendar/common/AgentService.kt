@@ -30,15 +30,15 @@ class AgentService(private val apiKey: String) {
     
     suspend fun getAnswer(question: String): String = withContext(Dispatchers.IO) {
         val prompt = "My mom doesn't know the unswer on this question $question, can you unswer?"
-        val requestBody = ChatRequest(
+        val requestBody = OpenAIChatRequest(
             model = "gpt-4o",
             messages = listOf(
-                ChatMessage(role = "system", content = systemPrompt),
-                ChatMessage(role = "user", content = prompt)
+                OpenAIChatMessage(role = "system", content = systemPrompt),
+                OpenAIChatMessage(role = "user", content = prompt)
             )
         )
         try {
-            val response: ChatResponse = httpClient.post("https://api.openai.com/v1/chat/completions") {
+            val response: OpenAIChatResponse = httpClient.post("https://api.openai.com/v1/chat/completions") {
                 headers {
                     append(HttpHeaders.Authorization, "Bearer $apiKey")
                 }
@@ -58,23 +58,23 @@ class AgentService(private val apiKey: String) {
 }
 
 @Serializable
-private data class ChatRequest(
+internal data class OpenAIChatRequest(
     val model: String,
-    val messages: List<ChatMessage>
+    val messages: List<OpenAIChatMessage>
 )
 
 @Serializable
-private data class ChatMessage(
+internal data class OpenAIChatMessage(
     val role: String,
     val content: String
 )
 
 @Serializable
-private data class ChatResponse(
-    val choices: List<Choice>
+internal data class OpenAIChatResponse(
+    val choices: List<OpenAIChoice>
 )
 
 @Serializable
-private data class Choice(
-    val message: ChatMessage
+internal data class OpenAIChoice(
+    val message: OpenAIChatMessage
 )

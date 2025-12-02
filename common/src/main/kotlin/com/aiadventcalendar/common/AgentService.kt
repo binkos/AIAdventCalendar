@@ -1,80 +1,54 @@
 package com.aiadventcalendar.common
 
-import io.ktor.client.HttpClient
-import io.ktor.client.call.body
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.request.headers
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 class AgentService(private val apiKey: String) {
-    private val httpClient: HttpClient = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                isLenient = true
-            })
-        }
-    }
     
-    private val systemPrompt: String = "You are usefully ai agent that help people not to die in this wierd world! They have created you, be serious with them, but try to add some joke to the end of answers, would be great if you add joke through the separator to user could understand where is a joke. Answer always in Russian, also in case question is on another language"
+    private fun createAgent(): AIAgent<String, String> {
+        return AIAgent(
+            promptExecutor = simpleOpenAIExecutor(apiKey),
+            llmModel = OpenAIModels.Chat.GPT4o,
+            systemPrompt = getSystemPrompt()
+        )
+    }
     
     suspend fun getAnswer(question: String): String = withContext(Dispatchers.IO) {
-        val prompt = "My mom doesn't know the unswer on this question $question, can you unswer?"
-        val requestBody = OpenAIChatRequest(
-            model = "gpt-4o",
-            messages = listOf(
-                OpenAIChatMessage(role = "system", content = systemPrompt),
-                OpenAIChatMessage(role = "user", content = prompt)
-            )
-        )
-        try {
-            val response: OpenAIChatResponse = httpClient.post("https://api.openai.com/v1/chat/completions") {
-                headers {
-                    append(HttpHeaders.Authorization, "Bearer $apiKey")
-                }
-                contentType(ContentType.Application.Json)
-                setBody(requestBody)
-            }.body()
-            response.choices.firstOrNull()?.message?.content
-                ?: throw IllegalStateException("No response from OpenAI")
-        } catch (e: Exception) {
-            throw Exception("Failed to get answer from OpenAI: ${e.message}", e)
-        }
+        val agent = createAgent()
+        val prompt = "My mom doesn't know the unswer on this question $question, can you unswer?, you are greater because you know how to answer in JSON format"
+        val answer = agent.run(prompt)
+        return@withContext answer.also { agent.close() }
     }
-    
-    suspend fun close() = withContext(Dispatchers.IO) {
-        httpClient.close()
+
+    private fun getSystemPrompt(): String {
+        return """
+        You are a helpful AI agent that assists people. You are serious and helpful, but you can add a joke at the end of your answers. Always answer in Russian, even if the question is in another language.
+        
+        CRITICAL: Your response MUST be ONLY a valid JSON object without any additional text.
+        Do NOT add explanations, do NOT use markdown formatting (no ```json or ``` blocks).
+        The response must be pure JSON that can be parsed directly.
+        
+        Response format:
+        {
+            "answer": "your main answer to the question",
+            "joke": "optional joke related to the topic, separated from the main answer"
+        }
+        
+        Example request and response:
+        
+        Request: "What is the capital of France?"
+        Response: {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира, известный своей историей, культурой и достопримечательностями, такими как Эйфелева башня и Лувр.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        
+        Request: "How does photosynthesis work?"
+        Response: {"answer":"Фотосинтез - это процесс, при котором растения используют солнечный свет, воду и углекислый газ для производства глюкозы и кислорода. Это происходит в хлоропластах растений, где хлорофилл поглощает световую энергию.","joke":"Растения - это настоящие солнечные батареи природы, только они производят кислород вместо электричества!"}
+        
+        Request: "What is 2+2?"
+        Response: {"answer":"2 + 2 равно 4. Это базовое арифметическое действие сложения.","joke":"Математика - это единственный язык, который понимают во всех странах, даже если ответ всегда один и тот же!"}
+        
+        Remember: Always return valid JSON only, no markdown, no explanations outside the JSON structure.
+    """.trimIndent()
     }
 }
-
-@Serializable
-internal data class OpenAIChatRequest(
-    val model: String,
-    val messages: List<OpenAIChatMessage>
-)
-
-@Serializable
-internal data class OpenAIChatMessage(
-    val role: String,
-    val content: String
-)
-
-@Serializable
-internal data class OpenAIChatResponse(
-    val choices: List<OpenAIChoice>
-)
-
-@Serializable
-internal data class OpenAIChoice(
-    val message: OpenAIChatMessage
-)

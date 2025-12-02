@@ -131,7 +131,7 @@ fun App(backendClient: BackendClient) {
                 OutlinedTextField(
                     value = inputText,
                     onValueChange = { inputText = it },
-                    label = { Text("Type your message...") },
+                    label = { Text("Type your message... (specify format: JSON, XML, or MD)") },
                     modifier = Modifier.weight(1f),
                     enabled = !isLoading,
                     singleLine = true

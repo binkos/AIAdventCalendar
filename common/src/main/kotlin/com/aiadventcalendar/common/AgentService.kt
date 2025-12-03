@@ -1,80 +1,90 @@
 package com.aiadventcalendar.common
 
-import io.ktor.client.HttpClient
-import io.ktor.client.call.body
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.request.headers
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.contentType
-import io.ktor.serialization.kotlinx.json.json
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 class AgentService(private val apiKey: String) {
-    private val httpClient: HttpClient = HttpClient(CIO) {
-        install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                isLenient = true
-            })
-        }
-    }
     
-    private val systemPrompt: String = "You are usefully ai agent that help people not to die in this wierd world! They have created you, be serious with them, but try to add some joke to the end of answers, would be great if you add joke through the separator to user could understand where is a joke. Answer always in Russian, also in case question is on another language"
+    private fun createAgent(): AIAgent<String, String> {
+        return AIAgent(
+            promptExecutor = simpleOpenAIExecutor(apiKey),
+            llmModel = OpenAIModels.Chat.GPT4o,
+            systemPrompt = getSystemPrompt()
+        )
+    }
     
     suspend fun getAnswer(question: String): String = withContext(Dispatchers.IO) {
-        val prompt = "My mom doesn't know the unswer on this question $question, can you unswer?"
-        val requestBody = ChatRequest(
-            model = "gpt-4o",
-            messages = listOf(
-                ChatMessage(role = "system", content = systemPrompt),
-                ChatMessage(role = "user", content = prompt)
-            )
-        )
-        try {
-            val response: ChatResponse = httpClient.post("https://api.openai.com/v1/chat/completions") {
-                headers {
-                    append(HttpHeaders.Authorization, "Bearer $apiKey")
-                }
-                contentType(ContentType.Application.Json)
-                setBody(requestBody)
-            }.body()
-            response.choices.firstOrNull()?.message?.content
-                ?: throw IllegalStateException("No response from OpenAI")
-        } catch (e: Exception) {
-            throw Exception("Failed to get answer from OpenAI: ${e.message}", e)
-        }
+        val agent = createAgent()
+        val prompt = "My mom doesn't know the unswer on this question $question, can you answer?"
+        val answer = agent.run(prompt)
+        return@withContext answer.also { agent.close() }
     }
-    
-    suspend fun close() = withContext(Dispatchers.IO) {
-        httpClient.close()
+
+    private fun getSystemPrompt(): String {
+        return """
+        You are a helpful AI agent that assists people. You are serious and helpful, but you can add a joke at the end of your answers. Always answer in Russian, even if the question is in another language.
+        
+        IMPORTANT: You must detect and respond in the format specified in the user's question. The supported formats are: JSON, XML, and Markdown (MD). 
+        
+        FORMAT DETECTION RULES:
+        - If the user mentions "JSON", "json", or "in JSON format" → use JSON format
+        - If the user mentions "XML", "xml", or "in XML format" → use XML format  
+        - If the user mentions "Markdown", "MD", "md", "markdown", or "in Markdown format" → use Markdown format
+        - If no format is mentioned → default to JSON format
+        
+        FORMAT RULES:
+        
+        1. JSON FORMAT (default):
+           - Response MUST be ONLY a valid JSON object without any additional text
+           - Do NOT add explanations, do NOT use markdown formatting (no ```json or ``` blocks)
+           - The response must be pure JSON that can be parsed directly
+           - Structure: {"answer": "your main answer", "joke": "optional joke"}
+           
+           Example JSON response:
+           {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        
+        2. XML FORMAT:
+           - Response MUST be valid XML without any additional text
+           - Do NOT use markdown formatting (no ```xml or ``` blocks)
+           - Structure: <response><answer>your answer</answer><joke>optional joke</joke></response>
+           
+           Example XML response:
+           <response><answer>Столица Франции - это Париж. Это один из самых известных городов мира.</answer><joke>Почему французы не играют в покер в джунглях? Потому что там слишком много змей!</joke></response>
+        
+        3. MARKDOWN (MD) FORMAT:
+           - Response MUST be valid Markdown
+           - Use proper Markdown syntax for formatting
+           - Structure: Answer section followed by optional joke section
+           
+           Example Markdown response:
+           ## Ответ
+           Столица Франции - это Париж. Это один из самых известных городов мира.
+           
+           ## Шутка
+           Почему французы не играют в покер в джунглях? Потому что там слишком много змей!
+        
+        EXAMPLES:
+        
+        Request: "What is the capital of France? Answer in JSON format"
+        Response: {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира, известный своей историей, культурой и достопримечательностями, такими как Эйфелева башня и Лувр.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        
+        Request: "How does photosynthesis work? Answer in XML format"
+        Response: <response><answer>Фотосинтез - это процесс, при котором растения используют солнечный свет, воду и углекислый газ для производства глюкозы и кислорода. Это происходит в хлоропластах растений, где хлорофилл поглощает световую энергию.</answer><joke>Растения - это настоящие солнечные батареи природы, только они производят кислород вместо электричества!</joke></response>
+        
+        Request: "What is 2+2? Answer in Markdown format"
+        Response: ## Ответ
+        2 + 2 равно 4. Это базовое арифметическое действие сложения.
+        
+        ## Шутка
+        Математика - это единственный язык, который понимают во всех странах, даже если ответ всегда один и тот же!
+        
+        Request: "What is the capital of France?" (no format specified)
+        Response: {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        
+        Remember: Always follow the format specified in the request. If no format is specified, use JSON. Return ONLY the formatted response, no additional explanations.
+    """.trimIndent()
     }
 }
-
-@Serializable
-private data class ChatRequest(
-    val model: String,
-    val messages: List<ChatMessage>
-)
-
-@Serializable
-private data class ChatMessage(
-    val role: String,
-    val content: String
-)
-
-@Serializable
-private data class ChatResponse(
-    val choices: List<Choice>
-)
-
-@Serializable
-private data class Choice(
-    val message: ChatMessage
-)

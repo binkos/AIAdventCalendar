@@ -38,11 +38,21 @@ fun Application.configureApplication(apiKey: String) {
             call.respond(HttpStatusCode.OK, HealthResponse(status = "ok"))
         }
         
-        post("/chat") {
+        /**
+         * Conversational endpoint that processes messages with history support.
+         * Returns typed JSON responses: required_questions, question, or answer.
+         */
+        post("/conversation") {
             try {
-                val request = call.receive<ChatRequest>()
-                val answer = agentService.getAnswer(request.prompt)
-                call.respond(HttpStatusCode.OK, ChatResponse(answer = answer))
+                val request = call.receive<ConversationRequest>()
+                val historyMessages = request.history.map { 
+                    HistoryMessage(role = it.role, content = it.content) 
+                }
+                val response = agentService.processMessage(
+                    userMessage = request.message,
+                    historyMessages = historyMessages
+                )
+                call.respond(HttpStatusCode.OK, ConversationResponse(response = response))
             } catch (e: Exception) {
                 call.respond(
                     HttpStatusCode.InternalServerError,
@@ -56,11 +66,30 @@ fun Application.configureApplication(apiKey: String) {
 @Serializable
 data class HealthResponse(val status: String)
 
+/**
+ * Request for the conversational endpoint.
+ */
 @Serializable
-data class ChatRequest(val prompt: String)
+data class ConversationRequest(
+    val message: String,
+    val history: List<ConversationHistoryItem> = emptyList()
+)
 
+/**
+ * History item for conversation tracking.
+ */
 @Serializable
-data class ChatResponse(val answer: String)
+data class ConversationHistoryItem(
+    val role: String,  // "user" or "assistant"
+    val content: String
+)
+
+/**
+ * Response from the conversational endpoint.
+ * Contains raw JSON response with type field.
+ */
+@Serializable
+data class ConversationResponse(val response: String)
 
 @Serializable
 data class ErrorResponse(val error: String?)

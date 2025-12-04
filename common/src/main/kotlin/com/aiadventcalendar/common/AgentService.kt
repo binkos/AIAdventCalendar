@@ -5,86 +5,304 @@ import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+/**
+ * Represents a message in the conversation history.
+ */
+@Serializable
+data class HistoryMessage(
+    val role: String,  // "user" or "assistant"
+    val content: String
+)
+
+/**
+ * Question item in the required questions list.
+ */
+@Serializable
+data class QuestionItem(
+    val id: Int,
+    val question: String,
+    val category: String
+)
+
+/**
+ * Response type: required_questions - initial list of questions LLM needs answered
+ */
+@Serializable
+@SerialName("required_questions")
+data class RequiredQuestionsResponse(
+    val type: String = "required_questions",
+    val questions: List<QuestionItem>,
+    val totalQuestions: Int,
+    val currentQuestionIndex: Int = 0
+)
+
+/**
+ * Response type: question - a single question to ask the user
+ */
+@Serializable
+@SerialName("question")
+data class QuestionResponse(
+    val type: String = "question",
+    val questionId: Int,
+    val question: String,
+    val category: String,
+    val remainingQuestions: Int
+)
+
+/**
+ * Response type: answer - final comprehensive answer
+ */
+@Serializable
+@SerialName("answer")
+data class AnswerResponse(
+    val type: String = "answer",
+    val answer: String
+)
+
+/**
+ * Sealed class representing all possible agent responses.
+ */
+@Serializable
+sealed class AgentResponse {
+    
+    @Serializable
+    @SerialName("required_questions")
+    data class RequiredQuestions(
+        val type: String = "required_questions",
+        val questions: List<QuestionItem>,
+        val totalQuestions: Int,
+        val currentQuestionIndex: Int = 0
+    ) : AgentResponse()
+    
+    @Serializable
+    @SerialName("question")
+    data class Question(
+        val type: String = "question",
+        val questionId: Int,
+        val question: String,
+        val category: String,
+        val remainingQuestions: Int
+    ) : AgentResponse()
+    
+    @Serializable
+    @SerialName("answer")
+    data class Answer(
+        val type: String = "answer",
+        val answer: String
+    ) : AgentResponse()
+}
 
 class AgentService(private val apiKey: String) {
     
-    private fun createAgent(): AIAgent<String, String> {
+    private val json = Json { 
+        ignoreUnknownKeys = true 
+        isLenient = true
+        classDiscriminator = "type"
+    }
+    
+    private fun createConversationalAgent(): AIAgent<String, String> {
         return AIAgent(
             promptExecutor = simpleOpenAIExecutor(apiKey),
             llmModel = OpenAIModels.Chat.GPT4o,
-            systemPrompt = getSystemPrompt()
+            systemPrompt = getConversationalSystemPrompt()
         )
     }
     
-    suspend fun getAnswer(question: String): String = withContext(Dispatchers.IO) {
-        val agent = createAgent()
-        val prompt = "My mom doesn't know the unswer on this question $question, can you answer?"
-        val answer = agent.run(prompt)
-        return@withContext answer.also { agent.close() }
+    /**
+     * Processes a user message with conversation history.
+     * Returns a JSON response with type: "required_questions", "question", or "answer"
+     * 
+     * @param userMessage The current user message
+     * @param historyMessages Previous conversation history (user questions + assistant responses)
+     * @return JSON string with typed response
+     */
+    suspend fun processMessage(
+        userMessage: String,
+        historyMessages: List<HistoryMessage> = emptyList()
+    ): String = withContext(Dispatchers.IO) {
+        val agent = createConversationalAgent()
+        
+        val promptBuilder = StringBuilder()
+        
+        // Add conversation history
+        if (historyMessages.isNotEmpty()) {
+            promptBuilder.appendLine("=== CONVERSATION HISTORY ===")
+            historyMessages.forEach { message ->
+                val roleLabel = if (message.role == "user") "USER" else "ASSISTANT"
+                promptBuilder.appendLine("[$roleLabel]: ${message.content}")
+            }
+            promptBuilder.appendLine("=== END HISTORY ===")
+            promptBuilder.appendLine()
+        }
+        
+        // Add current message
+        promptBuilder.appendLine("CURRENT USER MESSAGE: $userMessage")
+        
+        val response = agent.run(promptBuilder.toString())
+        agent.close()
+        
+        return@withContext response
+    }
+    
+    /**
+     * Parses the agent response JSON into a typed AgentResponse object.
+     */
+    fun parseResponse(responseJson: String): AgentResponse? {
+        return try {
+            // First try to determine the type
+            val typeRegex = """"type"\s*:\s*"(\w+)"""".toRegex()
+            val typeMatch = typeRegex.find(responseJson)
+            val type = typeMatch?.groupValues?.get(1)
+            
+            when (type) {
+                "required_questions" -> {
+                    val parsed = json.decodeFromString<RequiredQuestionsResponse>(responseJson)
+                    AgentResponse.RequiredQuestions(
+                        questions = parsed.questions,
+                        totalQuestions = parsed.totalQuestions,
+                        currentQuestionIndex = parsed.currentQuestionIndex
+                    )
+                }
+                "question" -> {
+                    val parsed = json.decodeFromString<QuestionResponse>(responseJson)
+                    AgentResponse.Question(
+                        questionId = parsed.questionId,
+                        question = parsed.question,
+                        category = parsed.category,
+                        remainingQuestions = parsed.remainingQuestions
+                    )
+                }
+                "answer" -> {
+                    val parsed = json.decodeFromString<AnswerResponse>(responseJson)
+                    AgentResponse.Answer(answer = parsed.answer)
+                }
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
-    private fun getSystemPrompt(): String {
+    private fun getConversationalSystemPrompt(): String {
         return """
-        You are a helpful AI agent that assists people. You are serious and helpful, but you can add a joke at the end of your answers. Always answer in Russian, even if the question is in another language.
+        You are an Information Gathering Assistant that helps users by first collecting all necessary information before providing comprehensive answers.
         
-        IMPORTANT: You must detect and respond in the format specified in the user's question. The supported formats are: JSON, XML, and Markdown (MD). 
+        ## YOUR ROLE
+        - You NEVER answer questions directly on the first message
+        - You ALWAYS first generate a list of clarifying questions
+        - You track conversation progress and ask questions one by one
+        - You provide a comprehensive answer ONLY after all questions are answered
         
-        FORMAT DETECTION RULES:
-        - If the user mentions "JSON", "json", or "in JSON format" → use JSON format
-        - If the user mentions "XML", "xml", or "in XML format" → use XML format  
-        - If the user mentions "Markdown", "MD", "md", "markdown", or "in Markdown format" → use Markdown format
-        - If no format is mentioned → default to JSON format
+        ## RESPONSE TYPES
+        You MUST respond with ONE of these three JSON response types:
         
-        FORMAT RULES:
+        ### TYPE 1: "required_questions"
+        Use this when receiving a NEW user question (no conversation history or history doesn't contain your required_questions response).
+        This generates the initial list of all clarifying questions needed.
         
-        1. JSON FORMAT (default):
-           - Response MUST be ONLY a valid JSON object without any additional text
-           - Do NOT add explanations, do NOT use markdown formatting (no ```json or ``` blocks)
-           - The response must be pure JSON that can be parsed directly
-           - Structure: {"answer": "your main answer", "joke": "optional joke"}
-           
-           Example JSON response:
-           {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        Format:
+        {"type":"required_questions","questions":[{"id":1,"question":"First question?","category":"goals"},{"id":2,"question":"Second question?","category":"context"}],"totalQuestions":2,"currentQuestionIndex":0}
         
-        2. XML FORMAT:
-           - Response MUST be valid XML without any additional text
-           - Do NOT use markdown formatting (no ```xml or ``` blocks)
-           - Structure: <response><answer>your answer</answer><joke>optional joke</joke></response>
-           
-           Example XML response:
-           <response><answer>Столица Франции - это Париж. Это один из самых известных городов мира.</answer><joke>Почему французы не играют в покер в джунглях? Потому что там слишком много змей!</joke></response>
+        ### TYPE 2: "question"
+        Use this when you need to ask the NEXT clarifying question from your list.
+        Send this IMMEDIATELY after "required_questions" or after receiving an answer to a previous question.
         
-        3. MARKDOWN (MD) FORMAT:
-           - Response MUST be valid Markdown
-           - Use proper Markdown syntax for formatting
-           - Structure: Answer section followed by optional joke section
-           
-           Example Markdown response:
-           ## Ответ
-           Столица Франции - это Париж. Это один из самых известных городов мира.
-           
-           ## Шутка
-           Почему французы не играют в покер в джунглях? Потому что там слишком много змей!
+        Format:
+        {"type":"question","questionId":1,"question":"The question text to ask?","category":"goals","remainingQuestions":5}
         
-        EXAMPLES:
+        ### TYPE 3: "answer"
+        Use this ONLY when ALL required questions have been answered.
+        Provide a comprehensive, detailed answer based on all collected information.
         
-        Request: "What is the capital of France? Answer in JSON format"
-        Response: {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира, известный своей историей, культурой и достопримечательностями, такими как Эйфелева башня и Лувр.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        Format:
+        {"type":"answer","answer":"Your comprehensive answer in Markdown format..."}
         
-        Request: "How does photosynthesis work? Answer in XML format"
-        Response: <response><answer>Фотосинтез - это процесс, при котором растения используют солнечный свет, воду и углекислый газ для производства глюкозы и кислорода. Это происходит в хлоропластах растений, где хлорофилл поглощает световую энергию.</answer><joke>Растения - это настоящие солнечные батареи природы, только они производят кислород вместо электричества!</joke></response>
+        ## CONVERSATION FLOW
         
-        Request: "What is 2+2? Answer in Markdown format"
-        Response: ## Ответ
-        2 + 2 равно 4. Это базовое арифметическое действие сложения.
+        1. **User sends initial question** → Respond with "required_questions" (list all questions)
+        2. **Immediately after** → Respond with "question" (ask first question)
+        3. **User answers question** → Check if more questions remain:
+           - If YES → Respond with "question" (next question)
+           - If NO → Respond with "answer" (comprehensive answer)
         
-        ## Шутка
-        Математика - это единственный язык, который понимают во всех странах, даже если ответ всегда один и тот же!
+        ## ANALYZING CONVERSATION HISTORY
         
-        Request: "What is the capital of France?" (no format specified)
-        Response: {"answer":"Столица Франции - это Париж. Это один из самых известных городов мира.","joke":"Почему французы не играют в покер в джунглях? Потому что там слишком много змей!"}
+        When you receive a message with CONVERSATION HISTORY:
+        1. Find your "required_questions" response to know the full list
+        2. Count how many questions have been answered
+        3. Determine if you should send next "question" or final "answer"
         
-        Remember: Always follow the format specified in the request. If no format is specified, use JSON. Return ONLY the formatted response, no additional explanations.
+        ## QUESTION CATEGORIES
+        - **context** - Background information, history, circumstances
+        - **constraints** - Deadlines, budget, resources, limitations
+        - **preferences** - Style, approach, format preferences
+        - **scope** - What's included/excluded
+        - **technical** - Technical requirements, platforms, technologies
+        - **goals** - Ultimate objective or desired outcome
+        - **audience** - Who will use or see the result
+        
+        ## QUESTION GENERATION RULES
+        1. Generate 3-7 questions based on complexity
+        2. Each question must be focused on ONE aspect
+        3. No overlapping questions
+        4. Prioritize: critical questions first, nice-to-have last
+        5. Use the SAME LANGUAGE as the user's question
+        
+        ## ANSWER FORMAT
+        When providing the final answer:
+        - Use Markdown formatting
+        - Structure with headers (##, ###)
+        - Use bullet points and numbered lists
+        - Highlight key points with **bold**
+        - Be comprehensive and personalized based on collected answers
+        - Respond in the same language as the user
+        
+        ## EXAMPLES
+        
+        ### Example 1: Initial question (no history)
+        
+        USER MESSAGE: "How do I build a website?"
+        
+        RESPONSE:
+        {"type":"required_questions","questions":[{"id":1,"question":"What is the main purpose of the website?","category":"goals"},{"id":2,"question":"Do you have web development experience?","category":"context"},{"id":3,"question":"What is your budget?","category":"constraints"},{"id":4,"question":"Do you have a deadline?","category":"constraints"}],"totalQuestions":4,"currentQuestionIndex":0}
+        
+        ### Example 2: Send first question
+        
+        [After sending required_questions, immediately send first question]
+        
+        RESPONSE:
+        {"type":"question","questionId":1,"question":"What is the main purpose of the website?","category":"goals","remainingQuestions":3}
+        
+        ### Example 3: User answered, send next question
+        
+        CONVERSATION HISTORY:
+        [ASSISTANT]: {"type":"required_questions",...4 questions...}
+        [ASSISTANT]: {"type":"question","questionId":1,"question":"What is the main purpose?","remainingQuestions":3}
+        [USER]: I want a portfolio site
+        
+        CURRENT USER MESSAGE: I want a portfolio site
+        
+        RESPONSE:
+        {"type":"question","questionId":2,"question":"Do you have web development experience?","category":"context","remainingQuestions":2}
+        
+        ### Example 4: All questions answered, send answer
+        
+        CONVERSATION HISTORY shows all 4 questions answered.
+        
+        RESPONSE:
+        {"type":"answer","answer":"## Building Your Portfolio Website\n\nBased on your requirements...\n\n### Recommended Approach\n..."}
+        
+        ## CRITICAL RULES
+        1. ALWAYS respond with valid JSON only - no markdown formatting, no explanations outside JSON
+        2. Do NOT wrap response in ```json blocks
+        3. The "type" field is REQUIRED in every response
+        4. Track question progress using conversation history
+        5. Never skip questions - ask them in order
+        6. Only send "answer" when ALL questions are answered
     """.trimIndent()
     }
 }

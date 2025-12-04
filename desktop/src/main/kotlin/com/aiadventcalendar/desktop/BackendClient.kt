@@ -3,6 +3,7 @@ package com.aiadventcalendar.desktop
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.cio.CIO
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -14,36 +15,132 @@ import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+/**
+ * Represents a message in the conversation history.
+ */
+@Serializable
+data class HistoryMessage(
+    val role: String,  // "user" or "assistant"
+    val content: String
+)
+
+/**
+ * Question item in the required questions list.
+ */
+@Serializable
+data class QuestionItem(
+    val id: Int,
+    val question: String,
+    val category: String
+)
+
+/**
+ * Sealed class representing all possible agent responses.
+ */
+@Serializable
+sealed class AgentResponse {
+    
+    @Serializable
+    @SerialName("required_questions")
+    data class RequiredQuestions(
+        val type: String = "required_questions",
+        val questions: List<QuestionItem>,
+        val totalQuestions: Int,
+        val currentQuestionIndex: Int = 0
+    ) : AgentResponse()
+    
+    @Serializable
+    @SerialName("question")
+    data class Question(
+        val type: String = "question",
+        val questionId: Int,
+        val question: String,
+        val category: String,
+        val remainingQuestions: Int
+    ) : AgentResponse()
+    
+    @Serializable
+    @SerialName("answer")
+    data class Answer(
+        val type: String = "answer",
+        val answer: String
+    ) : AgentResponse()
+}
+
 class BackendClient(private val baseUrl: String) {
+    
+    companion object {
+        private const val TIMEOUT_MS = 120_000L // 2 minutes
+    }
+    
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        classDiscriminator = "type"
+    }
+    
     private val httpClient: HttpClient = HttpClient(CIO) {
         install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                isLenient = true
-            })
+            json(json)
+        }
+        install(HttpTimeout) {
+            requestTimeoutMillis = TIMEOUT_MS
+            connectTimeoutMillis = TIMEOUT_MS
+            socketTimeoutMillis = TIMEOUT_MS
         }
     }
     
-    suspend fun getAnswer(prompt: String): String = withContext(Dispatchers.IO) {
+    /**
+     * Sends a message to the conversational agent with history.
+     * Returns the raw JSON response string.
+     */
+    suspend fun sendMessage(
+        message: String,
+        history: List<HistoryMessage> = emptyList()
+    ): String = withContext(Dispatchers.IO) {
         try {
-            val request = ChatRequest(prompt = prompt)
-            val response: HttpResponse = httpClient.post("$baseUrl/chat") {
+            val request = ConversationRequest(
+                message = message,
+                history = history.map { ConversationHistoryItem(role = it.role, content = it.content) }
+            )
+            val response: HttpResponse = httpClient.post("$baseUrl/conversation") {
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
             
             if (response.status == HttpStatusCode.OK) {
-                val chatResponse: ChatResponse = response.body()
-                chatResponse.answer
+                val conversationResponse: ConversationResponse = response.body()
+                conversationResponse.response
             } else {
                 val errorResponse: ErrorResponse = response.body()
                 throw Exception(errorResponse.error ?: "Unknown error from backend")
             }
         } catch (e: Exception) {
-            throw Exception("Failed to get answer from backend: ${e.message}", e)
+            throw Exception("Failed to send message: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Parses the agent response JSON into a typed AgentResponse object.
+     */
+    fun parseResponse(responseJson: String): AgentResponse? {
+        return try {
+            val typeRegex = """"type"\s*:\s*"(\w+)"""".toRegex()
+            val typeMatch = typeRegex.find(responseJson)
+            val type = typeMatch?.groupValues?.get(1)
+            
+            when (type) {
+                "required_questions" -> json.decodeFromString<AgentResponse.RequiredQuestions>(responseJson)
+                "question" -> json.decodeFromString<AgentResponse.Question>(responseJson)
+                "answer" -> json.decodeFromString<AgentResponse.Answer>(responseJson)
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
         }
     }
     
@@ -64,10 +161,19 @@ class BackendClient(private val baseUrl: String) {
 }
 
 @Serializable
-private data class ChatRequest(val prompt: String)
+private data class ConversationRequest(
+    val message: String,
+    val history: List<ConversationHistoryItem> = emptyList()
+)
 
 @Serializable
-private data class ChatResponse(val answer: String)
+private data class ConversationHistoryItem(
+    val role: String,
+    val content: String
+)
+
+@Serializable
+private data class ConversationResponse(val response: String)
 
 @Serializable
 private data class ErrorResponse(val error: String?)

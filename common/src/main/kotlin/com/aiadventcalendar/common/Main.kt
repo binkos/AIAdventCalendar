@@ -41,6 +41,11 @@ fun Application.configureApplication(apiKey: String) {
         /**
          * Conversational endpoint that processes messages with history support.
          * Returns typed JSON responses: required_questions, question, or answer.
+         * 
+         * Accepts temperature parameter (0.0-1.5) to control LLM creativity:
+         * - 0.0: Precise, deterministic outputs
+         * - 0.7: Balanced (default)
+         * - 1.2+: Creative, diverse outputs
          */
         post("/conversation") {
             try {
@@ -48,9 +53,11 @@ fun Application.configureApplication(apiKey: String) {
                 val historyMessages = request.history.map { 
                     HistoryMessage(role = it.role, content = it.content) 
                 }
+                val temperature = request.temperature.coerceIn(0.0, 2.0)
                 val response = agentService.processMessage(
                     userMessage = request.message,
-                    historyMessages = historyMessages
+                    historyMessages = historyMessages,
+                    temperature = temperature
                 )
                 call.respond(HttpStatusCode.OK, ConversationResponse(response = response))
             } catch (e: Exception) {
@@ -72,7 +79,8 @@ data class HealthResponse(val status: String)
 @Serializable
 data class ConversationRequest(
     val message: String,
-    val history: List<ConversationHistoryItem> = emptyList()
+    val history: List<ConversationHistoryItem> = emptyList(),
+    val temperature: Double = 0.7
 )
 
 /**

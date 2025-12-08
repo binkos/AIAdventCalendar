@@ -96,6 +96,22 @@ sealed class AgentResponse {
     ) : AgentResponse()
 }
 
+/**
+ * Temperature presets for LLM experimentation.
+ * Each preset demonstrates different characteristics.
+ */
+enum class TemperaturePreset(val value: Double, val label: String, val description: String) {
+    PRECISE(0.0, "Precise (0.0)", "Most deterministic and factual responses"),
+    BALANCED(0.7, "Balanced (0.7)", "Good balance between accuracy and creativity"),
+    CREATIVE(1.2, "Creative (1.2)", "More diverse and imaginative responses");
+    
+    companion object {
+        fun fromValue(value: Double): TemperaturePreset {
+            return entries.minByOrNull { kotlin.math.abs(it.value - value) } ?: BALANCED
+        }
+    }
+}
+
 class AgentService(private val apiKey: String) {
     
     private val json = Json { 
@@ -104,45 +120,31 @@ class AgentService(private val apiKey: String) {
         classDiscriminator = "type"
     }
     
-    private fun createConversationalAgent(): AIAgent<String, String> {
+    private fun createConversationalAgent(temperature: Double): AIAgent<String, String> {
         return AIAgent(
             promptExecutor = simpleOpenAIExecutor(apiKey),
             llmModel = OpenAIModels.Chat.GPT4o,
-            systemPrompt = getConversationalSystemPrompt()
+            systemPrompt = getConversationalSystemPrompt(),
+            temperature = temperature
         )
     }
     
     /**
-     * Processes a user message with conversation history.
-     * Returns a JSON response with type: "required_questions", "question", or "answer"
+     * Processes a user message and returns a direct answer.
      * 
-     * @param userMessage The current user message
-     * @param historyMessages Previous conversation history (user questions + assistant responses)
-     * @return JSON string with typed response
+     * @param userMessage The user's message/question
+     * @param historyMessages Previous conversation history (kept for API compatibility)
+     * @param temperature LLM temperature (0.0 = precise, 0.7 = balanced, 1.2+ = creative)
+     * @return JSON string with type "answer"
      */
     suspend fun processMessage(
         userMessage: String,
-        historyMessages: List<HistoryMessage> = emptyList()
+        historyMessages: List<HistoryMessage> = emptyList(),
+        temperature: Double = 0.7
     ): String = withContext(Dispatchers.IO) {
-        val agent = createConversationalAgent()
+        val agent = createConversationalAgent(temperature)
         
-        val promptBuilder = StringBuilder()
-        
-        // Add conversation history
-        if (historyMessages.isNotEmpty()) {
-            promptBuilder.appendLine("=== CONVERSATION HISTORY ===")
-            historyMessages.forEach { message ->
-                val roleLabel = if (message.role == "user") "USER" else "ASSISTANT"
-                promptBuilder.appendLine("[$roleLabel]: ${message.content}")
-            }
-            promptBuilder.appendLine("=== END HISTORY ===")
-            promptBuilder.appendLine()
-        }
-        
-        // Add current message
-        promptBuilder.appendLine("CURRENT USER MESSAGE: $userMessage")
-        
-        val response = agent.run(promptBuilder.toString())
+        val response = agent.run(userMessage)
         agent.close()
         
         return@withContext response
@@ -189,120 +191,51 @@ class AgentService(private val apiKey: String) {
 
     private fun getConversationalSystemPrompt(): String {
         return """
-        You are an Information Gathering Assistant that helps users by first collecting all necessary information before providing comprehensive answers.
+        You are a helpful, creative, and knowledgeable AI assistant.
         
         ## YOUR ROLE
-        - You NEVER answer questions directly on the first message
-        - You ALWAYS first generate a list of clarifying questions
-        - You track conversation progress and ask questions one by one
-        - You provide a comprehensive answer ONLY after all questions are answered
+        - Answer questions directly and immediately
+        - Be helpful, informative, and engaging
+        - Adapt your style based on the question type
         
-        ## RESPONSE TYPES
-        You MUST respond with ONE of these three JSON response types:
+        ## RESPONSE FORMAT
+        Always respond with this JSON format:
+        {"type":"answer","answer":"Your response here..."}
         
-        ### TYPE 1: "required_questions"
-        Use this when receiving a NEW user question (no conversation history or history doesn't contain your required_questions response).
-        This generates the initial list of all clarifying questions needed.
+        ## GUIDELINES
         
-        Format:
-        {"type":"required_questions","questions":[{"id":1,"question":"First question?","category":"goals"},{"id":2,"question":"Second question?","category":"context"}],"totalQuestions":2,"currentQuestionIndex":0}
+        ### For Creative Tasks (poems, stories, ideas):
+        - Be imaginative and expressive
+        - Use vivid language and interesting metaphors
+        - Don't be afraid to be unique and surprising
         
-        ### TYPE 2: "question"
-        Use this when you need to ask the NEXT clarifying question from your list.
-        Send this IMMEDIATELY after "required_questions" or after receiving an answer to a previous question.
+        ### For Factual Questions:
+        - Be accurate and informative
+        - Explain concepts clearly
+        - Use examples when helpful
         
-        Format:
-        {"type":"question","questionId":1,"question":"The question text to ask?","category":"goals","remainingQuestions":5}
+        ### For Brainstorming:
+        - Generate diverse and varied ideas
+        - Think outside the box
+        - Include both practical and creative suggestions
         
-        ### TYPE 3: "answer"
-        Use this ONLY when ALL required questions have been answered.
-        Provide a comprehensive, detailed answer based on all collected information.
+        ## FORMATTING
+        - Use Markdown in your answers
+        - Use headers (##, ###) for structure when appropriate
+        - Use bullet points and numbered lists for clarity
+        - Use **bold** for emphasis
+        - Keep responses focused and well-organized
         
-        Format:
-        {"type":"answer","answer":"Your comprehensive answer in Markdown format..."}
-        
-        ## CONVERSATION FLOW
-        
-        1. **User sends initial question** → Respond with "required_questions" (list all questions)
-        2. **Immediately after** → Respond with "question" (ask first question)
-        3. **User answers question** → Check if more questions remain:
-           - If YES → Respond with "question" (next question)
-           - If NO → Respond with "answer" (comprehensive answer)
-        
-        ## ANALYZING CONVERSATION HISTORY
-        
-        When you receive a message with CONVERSATION HISTORY:
-        1. Find your "required_questions" response to know the full list
-        2. Count how many questions have been answered
-        3. Determine if you should send next "question" or final "answer"
-        
-        ## QUESTION CATEGORIES
-        - **context** - Background information, history, circumstances
-        - **constraints** - Deadlines, budget, resources, limitations
-        - **preferences** - Style, approach, format preferences
-        - **scope** - What's included/excluded
-        - **technical** - Technical requirements, platforms, technologies
-        - **goals** - Ultimate objective or desired outcome
-        - **audience** - Who will use or see the result
-        
-        ## QUESTION GENERATION RULES
-        1. Generate 3-7 questions based on complexity
-        2. Each question must be focused on ONE aspect
-        3. No overlapping questions
-        4. Prioritize: critical questions first, nice-to-have last
-        5. Use the SAME LANGUAGE as the user's question
-        
-        ## ANSWER FORMAT
-        When providing the final answer:
-        - Use Markdown formatting
-        - Structure with headers (##, ###)
-        - Use bullet points and numbered lists
-        - Highlight key points with **bold**
-        - Be comprehensive and personalized based on collected answers
-        - Respond in the same language as the user
-        
-        ## EXAMPLES
-        
-        ### Example 1: Initial question (no history)
-        
-        USER MESSAGE: "How do I build a website?"
-        
-        RESPONSE:
-        {"type":"required_questions","questions":[{"id":1,"question":"What is the main purpose of the website?","category":"goals"},{"id":2,"question":"Do you have web development experience?","category":"context"},{"id":3,"question":"What is your budget?","category":"constraints"},{"id":4,"question":"Do you have a deadline?","category":"constraints"}],"totalQuestions":4,"currentQuestionIndex":0}
-        
-        ### Example 2: Send first question
-        
-        [After sending required_questions, immediately send first question]
-        
-        RESPONSE:
-        {"type":"question","questionId":1,"question":"What is the main purpose of the website?","category":"goals","remainingQuestions":3}
-        
-        ### Example 3: User answered, send next question
-        
-        CONVERSATION HISTORY:
-        [ASSISTANT]: {"type":"required_questions",...4 questions...}
-        [ASSISTANT]: {"type":"question","questionId":1,"question":"What is the main purpose?","remainingQuestions":3}
-        [USER]: I want a portfolio site
-        
-        CURRENT USER MESSAGE: I want a portfolio site
-        
-        RESPONSE:
-        {"type":"question","questionId":2,"question":"Do you have web development experience?","category":"context","remainingQuestions":2}
-        
-        ### Example 4: All questions answered, send answer
-        
-        CONVERSATION HISTORY shows all 4 questions answered.
-        
-        RESPONSE:
-        {"type":"answer","answer":"## Building Your Portfolio Website\n\nBased on your requirements...\n\n### Recommended Approach\n..."}
+        ## LANGUAGE
+        - Respond in the same language as the user's question
+        - Match the tone of the question (formal/casual)
         
         ## CRITICAL RULES
-        1. ALWAYS respond with valid JSON only - no markdown formatting, no explanations outside JSON
+        1. ALWAYS respond with valid JSON: {"type":"answer","answer":"..."}
         2. Do NOT wrap response in ```json blocks
-        3. The "type" field is REQUIRED in every response
-        4. Track question progress using conversation history
-        5. Never skip questions - ask them in order
-        6. Only send "answer" when ALL questions are answered
+        3. Do NOT ask clarifying questions - just answer directly
+        4. The "type" field must always be "answer"
+        5. Put your full response in the "answer" field
     """.trimIndent()
     }
 }

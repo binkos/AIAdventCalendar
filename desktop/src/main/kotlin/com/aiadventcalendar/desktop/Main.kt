@@ -75,11 +75,13 @@ import kotlinx.coroutines.launch
  * @property text The message content (supports markdown formatting)
  * @property isUser True if the message is from the user, false if from AI
  * @property messageType The type of message for visual styling
+ * @property comparisonData Optional comparison data for COMPARISON message type
  */
 data class ChatMessage(
     val text: String,
     val isUser: Boolean,
-    val messageType: MessageType = MessageType.REGULAR
+    val messageType: MessageType = MessageType.REGULAR,
+    val comparisonData: AgentResponse.ComparisonAnswer? = null
 )
 
 /**
@@ -89,7 +91,8 @@ enum class MessageType {
     REGULAR,       // Standard message
     QUESTION,      // Clarifying question from AI agent
     FINAL_ANSWER,  // Final comprehensive answer from AI
-    SYSTEM         // System/info messages
+    SYSTEM,        // System/info messages
+    COMPARISON     // LLM comparison results
 }
 
 /**
@@ -117,8 +120,10 @@ data class ConversationState(
 private object MessageColors {
     val questionBackground = Color(0xFF2E7D32)  // Green
     val answerBackground = Color(0xFF1565C0)    // Blue
+    val comparisonBackground = Color(0xFF6A1B9A) // Purple
     val questionText = Color.White
     val answerText = Color.White
+    val comparisonText = Color.White
 }
 
 /**
@@ -128,6 +133,7 @@ private object MessageLabels {
     const val QUESTION = "📝 Question"
     const val ANSWER = "✨ Answer"
     const val INFO = "ℹ️ Info"
+    const val COMPARISON = "⚖️ LLM Comparison"
 }
 
 /**
@@ -364,7 +370,7 @@ private fun ChatHeader(
                     style = MaterialTheme.typography.headlineMedium
                 )
                 Text(
-                    text = "🌡️ Temperature Experiment Mode",
+                    text = "⚖️ Dual LLM Comparison Mode",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -604,7 +610,11 @@ private fun ChatMessageList(
 
         // Chat messages
                 items(messages) { message ->
-                    ChatBubble(message = message)
+                    if (message.messageType == MessageType.COMPARISON && message.comparisonData != null) {
+                        ComparisonBubble(comparison = message.comparisonData)
+                    } else {
+                        ChatBubble(message = message)
+                    }
                 }
 
         // Loading indicator
@@ -764,6 +774,303 @@ fun ChatBubble(message: ChatMessage) {
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Comparison bubble displaying dual LLM responses with metrics and analysis.
+ */
+@Composable
+fun ComparisonBubble(comparison: AgentResponse.ComparisonAnswer) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MessageColors.comparisonBackground),
+            elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
+        ) {
+            SelectionContainer {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Header
+                    Text(
+                        text = MessageLabels.COMPARISON,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MessageColors.comparisonText
+                    )
+                    
+                    // Side-by-side comparison
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // OpenAI Response
+                        ComparisonResultCard(
+                            result = comparison.openaiResponse,
+                            modelName = "OpenAI GPT-3.5-turbo",
+                            accentColor = Color(0xFF10A37F),
+                            modifier = Modifier.weight(1f)
+                        )
+                        
+                        // Arcee AI Response
+                        ComparisonResultCard(
+                            result = comparison.arceeAiResponse,
+                            modelName = "Arcee AI",
+                            accentColor = Color(0xFFFF6B35),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    
+                    // Metrics Comparison Row
+                    MetricsComparisonRow(
+                        openaiResult = comparison.openaiResponse,
+                        arceeAiResult = comparison.arceeAiResponse
+                    )
+                    
+                    // Analysis Section
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "📊 Comparative Analysis",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = parseMarkdown(comparison.comparisonAnalysis, MaterialTheme.colorScheme.onSurfaceVariant),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Individual LLM response card in comparison view.
+ */
+@Composable
+private fun ComparisonResultCard(
+    result: LlmResponseResult,
+    modelName: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Model name header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = modelName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = accentColor
+                )
+                if (result.isSuccess) {
+                    Text(
+                        text = "✓",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color(0xFF4CAF50)
+                    )
+                } else {
+                    Text(
+                        text = "✗",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = Color(0xFFE53935)
+                    )
+                }
+            }
+            
+            if (!result.isSuccess) {
+                Text(
+                    text = "Error: ${result.errorMessage ?: "Unknown error"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFFE53935)
+                )
+            } else {
+                // Metrics
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    MetricChip(
+                        label = "⏱️ Time",
+                        value = "${result.executionTimeMs}ms",
+                        color = accentColor
+                    )
+                    MetricChip(
+                        label = "📊 Tokens",
+                        value = "${result.tokenUsage.totalTokens}",
+                        color = accentColor
+                    )
+                }
+                
+                // Response preview
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Text(
+                        text = result.response.take(300) + if (result.response.length > 300) "..." else "",
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                
+                // Token breakdown
+                Text(
+                    text = "📝 ${result.tokenUsage.inputTokens} in + ${result.tokenUsage.outputTokens} out tokens",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Small metric chip component.
+ */
+@Composable
+private fun MetricChip(
+    label: String,
+    value: String,
+    color: Color
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = color.copy(alpha = 0.2f)
+        ),
+        modifier = Modifier.padding(vertical = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = color
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = color
+            )
+        }
+    }
+}
+
+/**
+ * Metrics comparison row showing side-by-side metrics.
+ */
+@Composable
+private fun MetricsComparisonRow(
+    openaiResult: LlmResponseResult,
+    arceeAiResult: LlmResponseResult
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            if (openaiResult.isSuccess && arceeAiResult.isSuccess) {
+                ComparisonMetric(
+                    label = "Fastest",
+                    winner = if (openaiResult.executionTimeMs < arceeAiResult.executionTimeMs) "OpenAI" else "Arcee AI",
+                    openaiValue = "${openaiResult.executionTimeMs}ms",
+                    arceeAiValue = "${arceeAiResult.executionTimeMs}ms"
+                )
+                ComparisonMetric(
+                    label = "Most Efficient",
+                    winner = if (openaiResult.tokenUsage.totalTokens < arceeAiResult.tokenUsage.totalTokens) "OpenAI" else "Arcee AI",
+                    openaiValue = "${openaiResult.tokenUsage.totalTokens}",
+                    arceeAiValue = "${arceeAiResult.tokenUsage.totalTokens}"
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Comparison metric showing which model wins.
+ */
+@Composable
+private fun ComparisonMetric(
+    label: String,
+    winner: String,
+    openaiValue: String,
+    arceeAiValue: String
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "🏆 $winner",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "OpenAI: $openaiValue",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (winner == "OpenAI") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Arcee AI: $arceeAiValue",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (winner == "Arcee AI") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -929,6 +1236,15 @@ private suspend fun processAgentResponse(
                 onStateUpdate = onStateUpdate
             )
         }
+        
+        is AgentResponse.ComparisonAnswer -> {
+            handleComparisonAnswerResponse(
+                response = parsedResponse,
+                currentMessages = currentMessages,
+                onMessagesUpdate = onMessagesUpdate,
+                onStateUpdate = onStateUpdate
+            )
+        }
 
         null -> {
             // Fallback for unparseable response
@@ -1029,6 +1345,25 @@ private fun handleAnswerResponse(
         messageType = MessageType.FINAL_ANSWER
     )
     onMessagesUpdate(currentMessages + answerMessage)
+    onStateUpdate(ConversationState()) // Reset for new conversation
+}
+
+/**
+ * Handles the comparison answer response with dual LLM results.
+ */
+private fun handleComparisonAnswerResponse(
+    response: AgentResponse.ComparisonAnswer,
+    currentMessages: List<ChatMessage>,
+    onMessagesUpdate: (List<ChatMessage>) -> Unit,
+    onStateUpdate: (ConversationState) -> Unit
+) {
+    val comparisonMessage = ChatMessage(
+        text = "LLM Comparison Results",
+        isUser = false,
+        messageType = MessageType.COMPARISON,
+        comparisonData = response
+    )
+    onMessagesUpdate(currentMessages + comparisonMessage)
     onStateUpdate(ConversationState()) // Reset for new conversation
 }
 

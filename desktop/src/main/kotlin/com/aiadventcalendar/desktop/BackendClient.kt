@@ -69,7 +69,39 @@ sealed class AgentResponse {
         val type: String = "answer",
         val answer: String
     ) : AgentResponse()
+    
+    @Serializable
+    @SerialName("comparison_answer")
+    data class ComparisonAnswer(
+        val type: String = "comparison_answer",
+        val openaiResponse: LlmResponseResult,
+        val arceeAiResponse: LlmResponseResult,
+        val comparisonAnalysis: String
+    ) : AgentResponse()
 }
+
+/**
+ * Token usage statistics for an LLM response.
+ */
+@Serializable
+data class TokenUsage(
+    val inputTokens: Int,
+    val outputTokens: Int,
+    val totalTokens: Int
+)
+
+/**
+ * Result from a single LLM execution with metrics.
+ */
+@Serializable
+data class LlmResponseResult(
+    val modelName: String,
+    val response: String,
+    val executionTimeMs: Long,
+    val tokenUsage: TokenUsage,
+    val isSuccess: Boolean,
+    val errorMessage: String? = null
+)
 
 class BackendClient(private val baseUrl: String) {
     
@@ -143,6 +175,7 @@ class BackendClient(private val baseUrl: String) {
                 "required_questions" -> json.decodeFromString<AgentResponse.RequiredQuestions>(responseJson)
                 "question" -> json.decodeFromString<AgentResponse.Question>(responseJson)
                 "answer" -> json.decodeFromString<AgentResponse.Answer>(responseJson)
+                "comparison_answer" -> json.decodeFromString<AgentResponse.ComparisonAnswer>(responseJson)
                 else -> null
             }
         } catch (e: Exception) {

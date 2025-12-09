@@ -1,14 +1,20 @@
 package com.aiadventcalendar.desktop
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -22,7 +28,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -46,9 +55,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import kotlinx.coroutines.CoroutineScope
@@ -119,6 +130,91 @@ private object MessageLabels {
     const val INFO = "ℹ️ Info"
 }
 
+/**
+ * Temperature presets for LLM experimentation.
+ * Demonstrates how temperature affects precision, creativity, and diversity.
+ */
+enum class TemperaturePreset(
+    val value: Double,
+    val label: String,
+    val emoji: String,
+    val description: String,
+    val color: Color
+) {
+    PRECISE(
+        value = 0.0,
+        label = "Precise",
+        emoji = "🎯",
+        description = "Deterministic, factual, consistent responses",
+        color = Color(0xFF1E88E5) // Blue
+    ),
+    BALANCED(
+        value = 0.7,
+        label = "Balanced",
+        emoji = "⚖️",
+        description = "Good balance between accuracy and creativity",
+        color = Color(0xFF43A047) // Green
+    ),
+    CREATIVE(
+        value = 1.2,
+        label = "Creative",
+        emoji = "🎨",
+        description = "Diverse, imaginative, varied responses",
+        color = Color(0xFFE53935) // Red/Orange
+    );
+    
+    companion object {
+        fun fromValue(value: Double): TemperaturePreset {
+            return entries.minByOrNull { kotlin.math.abs(it.value - value) } ?: BALANCED
+        }
+    }
+}
+
+/**
+ * Sample prompts designed to demonstrate temperature differences.
+ * These prompts are carefully crafted to show the impact of temperature on output.
+ */
+object SamplePrompts {
+    val prompts: List<SamplePrompt> = listOf(
+        SamplePrompt(
+            title = "🎭 Creative Writing",
+            prompt = "Write a short poem about a robot learning to feel emotions for the first time",
+            description = "Creative task - higher temps produce more varied, imaginative results"
+        ),
+        SamplePrompt(
+            title = "📊 Data Analysis",
+            prompt = "Explain what happens when you divide a number by zero",
+            description = "Factual task - lower temps stay precise, higher temps add analogies"
+        ),
+        SamplePrompt(
+            title = "💡 Brainstorm Ideas",
+            prompt = "List 5 innovative uses for an empty cardboard box",
+            description = "Ideation task - temperature greatly affects creativity and uniqueness"
+        ),
+        SamplePrompt(
+            title = "📖 Story Start",
+            prompt = "Continue this story: 'The last human on Earth heard a knock on the door...'",
+            description = "Narrative task - observe how plot creativity changes with temperature"
+        ),
+        SamplePrompt(
+            title = "🔬 Scientific Explanation",
+            prompt = "Explain why the sky is blue to a 5-year-old",
+            description = "Explanatory task - balance of accuracy and engaging language"
+        ),
+        SamplePrompt(
+            title = "🎲 Random Word Association",
+            prompt = "Create a chain of 10 words where each word is somehow connected to the previous one, starting with 'moon'",
+            description = "Association task - high temps create more surprising connections"
+        )
+    )
+}
+
+data class SamplePrompt(
+    val title: String,
+    val prompt: String,
+    val description: String
+)
+
 // ============================================================================
 // SECTION 3: APPLICATION ENTRY POINT
 // ============================================================================
@@ -159,6 +255,10 @@ fun ChatApp(backendClient: BackendClient) {
     var isLoading by remember { mutableStateOf(false) }
     var conversationState by remember { mutableStateOf(ConversationState()) }
     
+    // Temperature State
+    var selectedTemperature by remember { mutableStateOf(TemperaturePreset.BALANCED) }
+    var showSamplePrompts by remember { mutableStateOf(true) }
+    
     // Coroutine scope for async operations
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -172,12 +272,14 @@ fun ChatApp(backendClient: BackendClient) {
 
     // Callback functions for UI interactions
     val onSendMessage: (String) -> Unit = { text ->
+        showSamplePrompts = false
         handleSendMessage(
             text = text,
             isLoading = isLoading,
             coroutineScope = coroutineScope,
             backendClient = backendClient,
             conversationState = conversationState,
+            temperature = selectedTemperature.value,
             onInputClear = { inputText = "" },
             onMessagesUpdate = { messages = it },
             onLoadingChange = { isLoading = it },
@@ -190,6 +292,7 @@ fun ChatApp(backendClient: BackendClient) {
         messages = emptyList()
         conversationState = ConversationState()
         inputText = ""
+        showSamplePrompts = true
     }
 
     // Main UI Layout
@@ -204,6 +307,20 @@ fun ChatApp(backendClient: BackendClient) {
                 hasMessages = messages.isNotEmpty(),
                 onNewChat = onResetConversation
             )
+            
+            TemperatureSelector(
+                selectedPreset = selectedTemperature,
+                onPresetSelected = { selectedTemperature = it },
+                enabled = !isLoading
+            )
+
+            if (showSamplePrompts && messages.isEmpty()) {
+                SamplePromptsSection(
+                    onPromptSelected = { prompt ->
+                        inputText = prompt
+                    }
+                )
+            }
 
             ChatMessageList(
                 messages = messages,
@@ -217,7 +334,8 @@ fun ChatApp(backendClient: BackendClient) {
                 onInputChange = { inputText = it },
                 onSend = { onSendMessage(inputText) },
                 isLoading = isLoading,
-                isCollectingAnswers = conversationState.isCollectingAnswers
+                isCollectingAnswers = conversationState.isCollectingAnswers,
+                currentTemperature = selectedTemperature
             )
         }
     }
@@ -240,10 +358,17 @@ private fun ChatHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "AI Advent Calendar",
-            style = MaterialTheme.typography.headlineMedium
-        )
+            Column {
+                Text(
+                    text = "AI Advent Calendar",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+                Text(
+                    text = "🌡️ Temperature Experiment Mode",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
         
         if (hasMessages) {
             Button(
@@ -254,6 +379,199 @@ private fun ChatHeader(
             ) {
                 Text("New Chat")
             }
+        }
+    }
+}
+
+/**
+ * Temperature selector component with preset buttons and description.
+ */
+@Composable
+private fun TemperatureSelector(
+    selectedPreset: TemperaturePreset,
+    onPresetSelected: (TemperaturePreset) -> Unit,
+    enabled: Boolean
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "🌡️ LLM Temperature",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Current: ${selectedPreset.value}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = selectedPreset.color
+                )
+            }
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TemperaturePreset.entries.forEach { preset ->
+                    TemperaturePresetButton(
+                        preset = preset,
+                        isSelected = preset == selectedPreset,
+                        enabled = enabled,
+                        onClick = { onPresetSelected(preset) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            
+            Text(
+                text = "${selectedPreset.emoji} ${selectedPreset.description}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+/**
+ * Individual temperature preset button.
+ */
+@Composable
+private fun TemperaturePresetButton(
+    preset: TemperaturePreset,
+    isSelected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor = if (isSelected) preset.color else Color.Transparent
+    val textColor = if (isSelected) Color.White else preset.color
+    val borderColor = if (isSelected) preset.color else preset.color.copy(alpha = 0.5f)
+    
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(48.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = backgroundColor,
+            contentColor = textColor,
+            disabledContainerColor = backgroundColor.copy(alpha = 0.5f),
+            disabledContentColor = textColor.copy(alpha = 0.5f)
+        ),
+        shape = RoundedCornerShape(8.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "${preset.emoji} ${preset.label}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+            )
+            Text(
+                text = "(${preset.value})",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp
+            )
+        }
+    }
+}
+
+/**
+ * Section displaying sample prompts to help users experiment with temperature.
+ */
+@Composable
+private fun SamplePromptsSection(
+    onPromptSelected: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "🧪 Try These Prompts to See Temperature Effects",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            
+            Text(
+                text = "Click a prompt below, then try it with different temperature settings to observe how outputs change:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            
+            Spacer(modifier = Modifier.height(4.dp))
+            
+            SamplePrompts.prompts.forEach { samplePrompt ->
+                SamplePromptCard(
+                    samplePrompt = samplePrompt,
+                    onClick = { onPromptSelected(samplePrompt.prompt) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Individual sample prompt card.
+ */
+@Composable
+private fun SamplePromptCard(
+    samplePrompt: SamplePrompt,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = samplePrompt.title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Text(
+                text = samplePrompt.prompt,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "💡 ${samplePrompt.description}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontStyle = FontStyle.Italic
+            )
         }
     }
 }
@@ -334,53 +652,66 @@ private fun ChatInputArea(
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
     isLoading: Boolean,
-    isCollectingAnswers: Boolean
+    isCollectingAnswers: Boolean,
+    currentTemperature: TemperaturePreset = TemperaturePreset.BALANCED
 ) {
     val labelText = if (isCollectingAnswers) {
         "Answer the question above..."
     } else {
-        "Ask your question..."
+        "Ask your question... (${currentTemperature.emoji} temp=${currentTemperature.value})"
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                OutlinedTextField(
-                    value = inputText,
-            onValueChange = onInputChange,
-            label = { Text(labelText) },
-            modifier = Modifier
-                .weight(1f)
-                .onPreviewKeyEvent { keyEvent ->
-                    // Send on Enter (without Shift), Shift+Enter for new line
-                    // onPreviewKeyEvent intercepts BEFORE the text field processes it
-                    if (keyEvent.key == Key.Enter && 
-                        keyEvent.type == KeyEventType.KeyDown && 
-                        !keyEvent.isShiftPressed
-                    ) {
-                        if (inputText.isNotBlank() && !isLoading) {
-                            onSend()
-                            true // Event consumed - prevents new line
-                        } else {
-                            true // Still consume to prevent empty new line
-                        }
-                    } else {
-                        false // Let other key events pass through
-                    }
-                },
-            enabled = !isLoading,
-            singleLine = false,
-            maxLines = 3
-        )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = inputText,
+                        onValueChange = onInputChange,
+                        label = { Text(labelText) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .onPreviewKeyEvent { keyEvent ->
+                                // Send on Enter (without Shift), Shift+Enter for new line
+                                // onPreviewKeyEvent intercepts BEFORE the text field processes it
+                                if (keyEvent.key == Key.Enter && 
+                                    keyEvent.type == KeyEventType.KeyDown && 
+                                    !keyEvent.isShiftPressed
+                                ) {
+                                    if (inputText.isNotBlank() && !isLoading) {
+                                        onSend()
+                                        true // Event consumed - prevents new line
+                                    } else {
+                                        true // Still consume to prevent empty new line
+                                    }
+                                } else {
+                                    false // Let other key events pass through
+                                }
+                            },
+                        enabled = !isLoading,
+                        singleLine = false,
+                        maxLines = 3
+                    )
 
-        SendButton(
-            onClick = onSend,
-            isLoading = isLoading,
-            isEnabled = !isLoading && inputText.isNotBlank()
-        )
-    }
+                    SendButton(
+                        onClick = onSend,
+                        isLoading = isLoading,
+                        isEnabled = !isLoading && inputText.isNotBlank()
+                    )
+                }
+                
+                Text(
+                    text = "🔬 Experiment tip: Try the same prompt with different temperatures to see how responses vary!",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxWidth(),
+                    textAlign = TextAlign.Center
+                )
+            }
 }
 
 /**
@@ -496,6 +827,7 @@ private fun handleSendMessage(
     coroutineScope: CoroutineScope,
     backendClient: BackendClient,
     conversationState: ConversationState,
+    temperature: Double,
     onInputClear: () -> Unit,
     onMessagesUpdate: (List<ChatMessage>) -> Unit,
     onLoadingChange: (Boolean) -> Unit,
@@ -515,10 +847,11 @@ private fun handleSendMessage(
             var currentState = conversationState.copy(history = updatedHistory)
             onStateUpdate(currentState)
 
-            // Send message to backend
+            // Send message to backend with temperature
             val response = backendClient.sendMessage(
                 message = text,
-                history = currentState.history.dropLast(1)
+                history = currentState.history.dropLast(1),
+                temperature = temperature
             )
 
             // Update history with assistant response
@@ -533,6 +866,7 @@ private fun handleSendMessage(
                 userMessage = text,
                 backendClient = backendClient,
                 currentState = currentState,
+                temperature = temperature,
                 currentMessages = currentMessages + ChatMessage(text = text, isUser = true),
                 onMessagesUpdate = onMessagesUpdate,
                 onStateUpdate = onStateUpdate
@@ -557,6 +891,7 @@ private suspend fun processAgentResponse(
     userMessage: String,
     backendClient: BackendClient,
     currentState: ConversationState,
+    temperature: Double,
     currentMessages: List<ChatMessage>,
     onMessagesUpdate: (List<ChatMessage>) -> Unit,
     onStateUpdate: (ConversationState) -> Unit
@@ -569,6 +904,7 @@ private suspend fun processAgentResponse(
                 responseJson = responseJson,
                 backendClient = backendClient,
                 currentState = currentState,
+                temperature = temperature,
                 currentMessages = currentMessages,
                 onMessagesUpdate = onMessagesUpdate,
                 onStateUpdate = onStateUpdate
@@ -610,6 +946,7 @@ private suspend fun handleRequiredQuestionsResponse(
     responseJson: String,
     backendClient: BackendClient,
     currentState: ConversationState,
+    temperature: Double,
     currentMessages: List<ChatMessage>,
     onMessagesUpdate: (List<ChatMessage>) -> Unit,
     onStateUpdate: (ConversationState) -> Unit
@@ -634,10 +971,11 @@ private suspend fun handleRequiredQuestionsResponse(
     )
     onMessagesUpdate(currentMessages + systemMessage)
 
-    // Request the first question
+    // Request the first question with temperature
     val questionResponse = backendClient.sendMessage(
         message = "",
-        history = newState.history
+        history = newState.history,
+        temperature = temperature
     )
     newState = newState.copy(
         history = newState.history + HistoryMessage(role = "assistant", content = questionResponse)
@@ -650,6 +988,7 @@ private suspend fun handleRequiredQuestionsResponse(
         userMessage = "",
         backendClient = backendClient,
         currentState = newState,
+        temperature = temperature,
         currentMessages = currentMessages + systemMessage,
         onMessagesUpdate = onMessagesUpdate,
         onStateUpdate = onStateUpdate

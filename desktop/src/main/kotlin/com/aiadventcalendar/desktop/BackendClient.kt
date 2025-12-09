@@ -97,15 +97,21 @@ class BackendClient(private val baseUrl: String) {
     /**
      * Sends a message to the conversational agent with history.
      * Returns the raw JSON response string.
+     * 
+     * @param message The user message to send
+     * @param history Previous conversation history
+     * @param temperature LLM temperature (0.0 = precise, 0.7 = balanced, 1.2+ = creative)
      */
     suspend fun sendMessage(
         message: String,
-        history: List<HistoryMessage> = emptyList()
+        history: List<HistoryMessage> = emptyList(),
+        temperature: Double = 0.7
     ): String = withContext(Dispatchers.IO) {
         try {
             val request = ConversationRequest(
                 message = message,
-                history = history.map { ConversationHistoryItem(role = it.role, content = it.content) }
+                history = history.map { ConversationHistoryItem(role = it.role, content = it.content) },
+                temperature = temperature
             )
             val response: HttpResponse = httpClient.post("$baseUrl/conversation") {
                 contentType(ContentType.Application.Json)
@@ -163,7 +169,8 @@ class BackendClient(private val baseUrl: String) {
 @Serializable
 private data class ConversationRequest(
     val message: String,
-    val history: List<ConversationHistoryItem> = emptyList()
+    val history: List<ConversationHistoryItem> = emptyList(),
+    val temperature: Double = 0.7
 )
 
 @Serializable

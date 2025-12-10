@@ -1,8 +1,11 @@
 package com.aiadventcalendar.common
 
-import ai.koog.agents.core.agent.AIAgent
+import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
-import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
+import ai.koog.prompt.params.LLMParams
+import ai.koog.prompt.tokenizer.SimpleRegexBasedTokenizer
+import ai.koog.prompt.tokenizer.Tokenizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -68,7 +71,7 @@ data class AnswerResponse(
  */
 @Serializable
 sealed class AgentResponse {
-    
+
     @Serializable
     @SerialName("required_questions")
     data class RequiredQuestions(
@@ -77,7 +80,7 @@ sealed class AgentResponse {
         val totalQuestions: Int,
         val currentQuestionIndex: Int = 0
     ) : AgentResponse()
-    
+
     @Serializable
     @SerialName("question")
     data class Question(
@@ -87,7 +90,7 @@ sealed class AgentResponse {
         val category: String,
         val remainingQuestions: Int
     ) : AgentResponse()
-    
+
     @Serializable
     @SerialName("answer")
     data class Answer(
@@ -104,7 +107,7 @@ enum class TemperaturePreset(val value: Double, val label: String, val descripti
     PRECISE(0.0, "Precise (0.0)", "Most deterministic and factual responses"),
     BALANCED(0.7, "Balanced (0.7)", "Good balance between accuracy and creativity"),
     CREATIVE(1.2, "Creative (1.2)", "More diverse and imaginative responses");
-    
+
     companion object {
         fun fromValue(value: Double): TemperaturePreset {
             return entries.minByOrNull { kotlin.math.abs(it.value - value) } ?: BALANCED
@@ -113,25 +116,28 @@ enum class TemperaturePreset(val value: Double, val label: String, val descripti
 }
 
 class AgentService(private val apiKey: String) {
-    
-    private val json = Json { 
-        ignoreUnknownKeys = true 
+    val client = OpenAILLMClient(apiKey)
+    var historyPrompt = prompt(
+        id = "running-prompt",
+        params = LLMParams(maxTokens = 100)
+    ) {
+        system("You are helpfully assistant")
+    }
+    val model = OpenAIModels.Chat.GPT4o.copy(
+        maxOutputTokens = 100L,
+        contextLength = 300L
+    )
+    val tokenizer: Tokenizer = SimpleRegexBasedTokenizer()
+
+    private val json = Json {
+        ignoreUnknownKeys = true
         isLenient = true
         classDiscriminator = "type"
     }
-    
-    private fun createConversationalAgent(temperature: Double): AIAgent<String, String> {
-        return AIAgent(
-            promptExecutor = simpleOpenAIExecutor(apiKey),
-            llmModel = OpenAIModels.Chat.GPT4o,
-            systemPrompt = getConversationalSystemPrompt(),
-            temperature = temperature
-        )
-    }
-    
+
     /**
      * Processes a user message and returns a direct answer.
-     * 
+     *
      * @param userMessage The user's message/question
      * @param historyMessages Previous conversation history (kept for API compatibility)
      * @param temperature LLM temperature (0.0 = precise, 0.7 = balanced, 1.2+ = creative)
@@ -142,14 +148,45 @@ class AgentService(private val apiKey: String) {
         historyMessages: List<HistoryMessage> = emptyList(),
         temperature: Double = 0.7
     ): String = withContext(Dispatchers.IO) {
-        val agent = createConversationalAgent(temperature)
-        
-        val response = agent.run(userMessage)
-        agent.close()
-        
-        return@withContext response
+        historyPrompt = prompt(existing = historyPrompt) {
+            user(userMessage)
+        }
+
+        println(
+            historyPrompt.messages.joinToString { it.content + "\n" }
+        )
+
+        val responses = client.execute(
+            prompt = historyPrompt,
+            model = model
+        )
+
+        historyPrompt = if (historyPrompt.latestTokenUsage > model.contextLength) {
+            println("historyPrompt.latestTokenUsage > model.contextLength")
+            prompt(
+                id = "running-prompt",
+                params = LLMParams(maxTokens = 100)
+            ) {
+                val sysMessage = historyPrompt.messages.first()
+                message(sysMessage)
+
+
+                var i = historyPrompt.messages.lastIndex
+                message(historyPrompt.messages[i-2])
+                message(historyPrompt.messages[i-1])
+                message(historyPrompt.messages[i])
+            }
+        } else {
+            println("historyPrompt.latestTokenUsage < model.contextLength")
+            prompt(historyPrompt) {
+                messages(responses)
+            }
+        }
+        println("CONTEXT WINDOW - ${model.contextLength} -- latest tokens usage: ${historyPrompt.latestTokenUsage}")
+
+        return@withContext responses.joinToString { "${it.content} \n---Tokens info: ---\ninput tokens with history: ${it.metaInfo.inputTokensCount}, output tokens: ${it.metaInfo.outputTokensCount} \ntotal tokens used per session: ${it.metaInfo.totalTokensCount}" }
     }
-    
+
     /**
      * Parses the agent response JSON into a typed AgentResponse object.
      */
@@ -159,7 +196,7 @@ class AgentService(private val apiKey: String) {
             val typeRegex = """"type"\s*:\s*"(\w+)"""".toRegex()
             val typeMatch = typeRegex.find(responseJson)
             val type = typeMatch?.groupValues?.get(1)
-            
+
             when (type) {
                 "required_questions" -> {
                     val parsed = json.decodeFromString<RequiredQuestionsResponse>(responseJson)
@@ -169,6 +206,7 @@ class AgentService(private val apiKey: String) {
                         currentQuestionIndex = parsed.currentQuestionIndex
                     )
                 }
+
                 "question" -> {
                     val parsed = json.decodeFromString<QuestionResponse>(responseJson)
                     AgentResponse.Question(
@@ -178,10 +216,12 @@ class AgentService(private val apiKey: String) {
                         remainingQuestions = parsed.remainingQuestions
                     )
                 }
+
                 "answer" -> {
                     val parsed = json.decodeFromString<AnswerResponse>(responseJson)
                     AgentResponse.Answer(answer = parsed.answer)
                 }
+
                 else -> null
             }
         } catch (e: Exception) {

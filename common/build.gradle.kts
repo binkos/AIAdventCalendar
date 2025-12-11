@@ -5,7 +5,7 @@ plugins {
 }
 
 dependencies {
-    implementation("ai.koog:koog-agents:0.5.2")
+    implementation("ai.koog:koog-agents:0.5.4")
     implementation("io.ktor:ktor-server-core:3.3.0")
     implementation("io.ktor:ktor-server-netty:3.3.0")
     implementation("io.ktor:ktor-server-content-negotiation:3.3.0")

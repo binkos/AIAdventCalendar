@@ -3,11 +3,11 @@ package com.aiadventcalendar.common
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
-import ai.koog.prompt.params.LLMParams
-import ai.koog.prompt.tokenizer.SimpleRegexBasedTokenizer
-import ai.koog.prompt.tokenizer.Tokenizer
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.RequestMetaInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.Clock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -119,15 +119,17 @@ class AgentService(private val apiKey: String) {
     val client = OpenAILLMClient(apiKey)
     var historyPrompt = prompt(
         id = "running-prompt",
-        params = LLMParams(maxTokens = 100)
     ) {
         system("You are helpfully assistant")
     }
-    val model = OpenAIModels.Chat.GPT4o.copy(
-        maxOutputTokens = 100L,
-        contextLength = 300L
-    )
-    val tokenizer: Tokenizer = SimpleRegexBasedTokenizer()
+
+    var summarizerPrompt = prompt(
+        id = "summarize-prompt"
+    ) {
+        system("You are history compression assistant, you receive user's messages with AI agent and return one message a summary of existed dialog, to use later in conversation instead of history")
+    }
+
+    val model = OpenAIModels.Chat.GPT4o
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -152,37 +154,43 @@ class AgentService(private val apiKey: String) {
             user(userMessage)
         }
 
-        println(
-            historyPrompt.messages.joinToString { it.content + "\n" }
-        )
-
         val responses = client.execute(
             prompt = historyPrompt,
             model = model
         )
 
-        historyPrompt = if (historyPrompt.latestTokenUsage > model.contextLength) {
-            println("historyPrompt.latestTokenUsage > model.contextLength")
-            prompt(
-                id = "running-prompt",
-                params = LLMParams(maxTokens = 100)
-            ) {
+        historyPrompt = if ((historyPrompt.messages.count() + responses.size) % 11 == 0) {
+            summarizerPrompt = summarizerPrompt.copy(
+                messages = buildList {
+                    add(summarizerPrompt.messages.first())
+                    addAll(historyPrompt.messages.subList(1, historyPrompt.messages.lastIndex))
+                    addAll(responses)
+                    add(
+                        Message.User(
+                            "Summarize history messages",
+                            metaInfo = RequestMetaInfo(Clock.System.now())
+                        )
+                    )
+                }
+            )
+
+            val response = client.execute(
+                prompt = summarizerPrompt,
+                model = OpenAIModels.Reasoning.O3Mini
+            )
+
+            println(response.joinToString { it.content })
+
+            prompt(id = historyPrompt.id) {
                 val sysMessage = historyPrompt.messages.first()
                 message(sysMessage)
-
-
-                var i = historyPrompt.messages.lastIndex
-                message(historyPrompt.messages[i-2])
-                message(historyPrompt.messages[i-1])
-                message(historyPrompt.messages[i])
+                messages(response)
             }
         } else {
-            println("historyPrompt.latestTokenUsage < model.contextLength")
             prompt(historyPrompt) {
                 messages(responses)
             }
         }
-        println("CONTEXT WINDOW - ${model.contextLength} -- latest tokens usage: ${historyPrompt.latestTokenUsage}")
 
         return@withContext responses.joinToString { "${it.content} \n---Tokens info: ---\ninput tokens with history: ${it.metaInfo.inputTokensCount}, output tokens: ${it.metaInfo.outputTokensCount} \ntotal tokens used per session: ${it.metaInfo.totalTokensCount}" }
     }

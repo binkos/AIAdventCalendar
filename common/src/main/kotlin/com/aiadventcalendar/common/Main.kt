@@ -13,6 +13,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.routing
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import kotlinx.serialization.Serializable
 
 fun main() {
@@ -38,33 +39,138 @@ fun Application.configureApplication(apiKey: String) {
             call.respond(HttpStatusCode.OK, HealthResponse(status = "ok"))
         }
         
-        /**
-         * Conversational endpoint that processes messages with history support.
-         * Returns typed JSON responses: required_questions, question, or answer.
-         * 
-         * Accepts temperature parameter (0.0-1.5) to control LLM creativity:
-         * - 0.0: Precise, deterministic outputs
-         * - 0.7: Balanced (default)
-         * - 1.2+: Creative, diverse outputs
-         */
-        post("/conversation") {
-            try {
-                val request = call.receive<ConversationRequest>()
-                val historyMessages = request.history.map { 
-                    HistoryMessage(role = it.role, content = it.content) 
+        route("/agents/{agentId}") {
+            get {
+                try {
+                    val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
+                    val agent = agentService.createOrGetAgent(agentId)
+                    val chats = agentService.getChatHistory(agent.agentId)
+                    val chatSummaries = chats.map { chat ->
+                        val lastMessage = chat.messages.lastOrNull()?.content?.take(100) ?: "No messages yet"
+                        ChatSummary(
+                            id = chat.id,
+                            agentId = chat.agentId,
+                            lastMessage = lastMessage,
+                            updatedAt = chat.updatedAt
+                        )
+                    }
+                    call.respond(HttpStatusCode.OK, AgentInfoResponse(
+                        agentId = agentId,
+                        chats = chatSummaries
+                    ))
+                } catch (e: Exception) {
+                    call.respond(
+                        HttpStatusCode.InternalServerError,
+                        ErrorResponse(error = e.message ?: "Unknown error")
+                    )
                 }
-                val temperature = request.temperature.coerceIn(0.0, 2.0)
-                val response = agentService.processMessage(
-                    userMessage = request.message,
-                    historyMessages = historyMessages,
-                    temperature = temperature
-                )
-                call.respond(HttpStatusCode.OK, ConversationResponse(response = response))
-            } catch (e: Exception) {
-                call.respond(
-                    HttpStatusCode.InternalServerError,
-                    ErrorResponse(error = e.message ?: "Unknown error")
-                )
+            }
+            
+            post {
+                try {
+                    val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
+                    val agent = agentService.createOrGetAgent(agentId)
+                    val chats = agentService.getChatHistory(agent.agentId)
+                    val chatSummaries = chats.map { chat ->
+                        val lastMessage = chat.messages.lastOrNull()?.content?.take(100) ?: "No messages yet"
+                        ChatSummary(
+                            id = chat.id,
+                            agentId = chat.agentId,
+                            lastMessage = lastMessage,
+                            updatedAt = chat.updatedAt
+                        )
+                    }
+                    call.respond(HttpStatusCode.OK, AgentInfoResponse(
+                        agentId = agentId,
+                        chats = chatSummaries
+                    ))
+                } catch (e: Exception) {
+                    call.respond(
+                        HttpStatusCode.InternalServerError,
+                        ErrorResponse(error = e.message ?: "Unknown error")
+                    )
+                }
+            }
+            
+            route("/chats") {
+                post {
+                    try {
+                        val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
+                        call.receive<CreateChatRequest>() // Validate request structure
+                        val chat = agentService.createChat(agentId)
+                        call.respond(HttpStatusCode.OK, CreateChatResponse(
+                            chatId = chat.id,
+                            createdAt = chat.createdAt
+                        ))
+                    } catch (e: Exception) {
+                        call.respond(
+                            HttpStatusCode.InternalServerError,
+                            ErrorResponse(error = e.message ?: "Unknown error")
+                        )
+                    }
+                }
+                
+                get {
+                    try {
+                        val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
+                        val chats = agentService.getChatHistory(agentId)
+                        val chatSummaries = chats.map { chat ->
+                            val lastMessage = chat.messages.lastOrNull()?.content?.take(100) ?: "No messages yet"
+                            ChatSummary(
+                                id = chat.id,
+                                agentId = chat.agentId,
+                                lastMessage = lastMessage,
+                                updatedAt = chat.updatedAt
+                            )
+                        }
+                        call.respond(HttpStatusCode.OK, ChatHistoryResponse(chats = chatSummaries))
+                    } catch (e: Exception) {
+                        call.respond(
+                            HttpStatusCode.InternalServerError,
+                            ErrorResponse(error = e.message ?: "Unknown error")
+                        )
+                    }
+                }
+                
+                route("/{chatId}") {
+                    get {
+                        try {
+                            val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
+                            val chatId = call.parameters["chatId"] ?: throw IllegalArgumentException("chatId is required")
+                            val chat = agentService.getChat(agentId, chatId)
+                                ?: throw IllegalStateException("Chat not found")
+                            call.respond(HttpStatusCode.OK, ChatResponse(chat = chat))
+                        } catch (e: Exception) {
+                            call.respond(
+                                HttpStatusCode.InternalServerError,
+                                ErrorResponse(error = e.message ?: "Unknown error")
+                            )
+                        }
+                    }
+                    
+                    route("/messages") {
+                        post {
+                            try {
+                                val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
+                                val chatId = call.parameters["chatId"] ?: throw IllegalArgumentException("chatId is required")
+                                val request = call.receive<SendMessageRequest>()
+                                val temperature = request.temperature.coerceIn(0.0, 2.0)
+                                val response = agentService.processMessage(
+                                    agentId = agentId,
+                                    chatId = chatId,
+                                    userMessage = request.message,
+                                    temperature = temperature
+                                )
+                                call.respond(HttpStatusCode.OK, ConversationResponse(response = response))
+                            } catch (e: Exception) {
+                                call.respond(
+                                    HttpStatusCode.InternalServerError,
+                                    ErrorResponse(error = e.message ?: "Unknown error")
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -74,22 +180,65 @@ fun Application.configureApplication(apiKey: String) {
 data class HealthResponse(val status: String)
 
 /**
- * Request for the conversational endpoint.
+ * Response containing agent info and chat history.
  */
 @Serializable
-data class ConversationRequest(
-    val message: String,
-    val history: List<ConversationHistoryItem> = emptyList(),
-    val temperature: Double = 0.7
+data class AgentInfoResponse(
+    val agentId: String,
+    val chats: List<ChatSummary>
 )
 
 /**
- * History item for conversation tracking.
+ * Summary of a chat for listing purposes.
  */
 @Serializable
-data class ConversationHistoryItem(
-    val role: String,  // "user" or "assistant"
-    val content: String
+data class ChatSummary(
+    val id: String,
+    val agentId: String,
+    val lastMessage: String,
+    val updatedAt: Long
+)
+
+/**
+ * Request to create a new chat.
+ */
+@Serializable
+data class CreateChatRequest(
+    val agentId: String
+)
+
+/**
+ * Response after creating a new chat.
+ */
+@Serializable
+data class CreateChatResponse(
+    val chatId: String,
+    val createdAt: Long
+)
+
+/**
+ * Response containing chat history list.
+ */
+@Serializable
+data class ChatHistoryResponse(
+    val chats: List<ChatSummary>
+)
+
+/**
+ * Response containing full chat data.
+ */
+@Serializable
+data class ChatResponse(
+    val chat: Chat
+)
+
+/**
+ * Request to send a message in a chat.
+ */
+@Serializable
+data class SendMessageRequest(
+    val message: String,
+    val temperature: Double = 0.7
 )
 
 /**

@@ -12,6 +12,7 @@ dependencies {
     implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    implementation("org.xerial:sqlite-jdbc:3.44.1.0")
     
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")

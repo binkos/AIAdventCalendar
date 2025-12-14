@@ -1,6 +1,7 @@
 package com.aiadventcalendar.desktop
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -49,11 +51,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class ChatMessage(
     val text: String,
     val isUser: Boolean
 )
+
+enum class AppScreen {
+    AGENT_INPUT,
+    CHAT_VIEW
+}
 
 fun main() = application {
     val backendUrl: String = System.getenv("BACKEND_URL") ?: "http://localhost:8080"
@@ -72,34 +82,431 @@ fun main() = application {
 
 @Composable
 fun ChatApp(backendClient: BackendClient) {
+    var currentScreen by remember { mutableStateOf(AppScreen.AGENT_INPUT) }
+    var agentId by remember { mutableStateOf("") }
+    var inputAgentId by remember { mutableStateOf("") }
+    var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
+    var currentChatId by remember { mutableStateOf<String?>(null) }
+    var messages by remember { mutableStateOf<Map<String, List<ChatMessage>>>(emptyMap()) }
     var inputText by remember { mutableStateOf("") }
-    var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem(messages.size - 1)
+    // Load messages when chat is selected
+    LaunchedEffect(currentChatId) {
+        currentChatId?.let { chatId ->
+            if (!messages.containsKey(chatId)) {
+                coroutineScope.launch {
+                    try {
+                        val chatResponse = backendClient.getChat(agentId, chatId)
+                        messages = messages + (chatId to chatResponse.chat.messages.map { msg ->
+                            ChatMessage(
+                                text = msg.content,
+                                isUser = msg.role == "user"
+                            )
+                        })
+                    } catch (e: Exception) {
+                        // Error loading chat
+                    }
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(currentChatId, messages) {
+        currentChatId?.let { chatId ->
+            val chatMessages = messages[chatId] ?: emptyList()
+            if (chatMessages.isNotEmpty()) {
+                listState.animateScrollToItem(chatMessages.size - 1)
+            }
         }
     }
 
     MaterialTheme {
+        when (currentScreen) {
+            AppScreen.AGENT_INPUT -> {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
-) {
-            LazyColumn(
-                state = listState,
+        ) {
+                    AgentInputScreen(
+                        agentId = inputAgentId,
+                        onAgentIdChange = { inputAgentId = it },
+                        onAgentIdSubmit = {
+                            if (inputAgentId.isNotBlank()) {
+                                coroutineScope.launch {
+                                    try {
+                                        isLoading = true
+                                        val agentInfo = backendClient.getAgent(inputAgentId)
+                                        agentId = inputAgentId
+                                        chats = agentInfo.chats
+                                        currentScreen = AppScreen.CHAT_VIEW
+                                        isLoading = false
+                                    } catch (e: Exception) {
+                                        isLoading = false
+                                        // Show error - for now just keep on input screen
+                                    }
+                                }
+                            }
+                        },
+                        isLoading = isLoading
+                    )
+                }
+            }
+            
+            AppScreen.CHAT_VIEW -> {
+                SplitLayoutScreen(
+                    agentId = agentId,
+                    chats = chats,
+                    currentChatId = currentChatId,
+                    messages = messages[currentChatId] ?: emptyList(),
+                inputText = inputText,
+                onInputChange = { inputText = it },
+                    onNewChat = {
+                        coroutineScope.launch {
+                            try {
+                                isLoading = true
+                                val newChat = backendClient.createChat(agentId)
+                                chats = backendClient.getChatHistory(agentId).chats
+                                currentChatId = newChat.chatId
+                                messages = messages + (newChat.chatId to emptyList())
+                                isLoading = false
+                            } catch (e: Exception) {
+                                isLoading = false
+                            }
+                        }
+                    },
+                    onChatSelected = { chatId ->
+                        currentChatId = chatId
+                    },
+                    onSend = {
+                        currentChatId?.let { chatId ->
+                            if (inputText.isNotBlank() && !isLoading) {
+                                coroutineScope.launch {
+                                    val text = inputText
+                                    inputText = ""
+                                    val currentMessages = messages[chatId] ?: emptyList()
+                                    messages = messages + (chatId to (currentMessages + ChatMessage(text = text, isUser = true)))
+                                    isLoading = true
+                                    
+                                    try {
+                                        val response = backendClient.sendMessage(
+                                            agentId = agentId,
+                                            chatId = chatId,
+                                            message = text,
+                                            temperature = 0.7
+                                        )
+                                        
+                                        val parsed = backendClient.parseResponse(response)
+                                        val answerText = when (parsed) {
+                                            is AgentResponse.Answer -> parsed.answer
+                                            else -> response
+                                        }
+                                        
+                                        val updatedMessages = messages[chatId] ?: emptyList()
+                                        messages = messages + (chatId to (updatedMessages + ChatMessage(text = answerText, isUser = false)))
+                                        
+                                        // Refresh chat history
+                                        chats = backendClient.getChatHistory(agentId).chats
+                                        
+                                        // Reload full chat to sync with server
+                                        val chatResponse = backendClient.getChat(agentId, chatId)
+                                        messages = messages + (chatId to chatResponse.chat.messages.map { msg ->
+                                            ChatMessage(
+                                                text = msg.content,
+                                                isUser = msg.role == "user"
+                                            )
+                                        })
+                                    } catch (e: Exception) {
+                                        val errorMessages = messages[chatId] ?: emptyList()
+                                        messages = messages + (chatId to (errorMessages + ChatMessage(text = "Error: ${e.message}", isUser = false)))
+                                    } finally {
+                                        isLoading = false
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onBack = {
+                        currentScreen = AppScreen.AGENT_INPUT
+                        agentId = ""
+                        chats = emptyList()
+                        currentChatId = null
+                        messages = emptyMap()
+                    },
+                isLoading = isLoading,
+                    listState = listState
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AgentInputScreen(
+    agentId: String,
+    onAgentIdChange: (String) -> Unit,
+    onAgentIdSubmit: () -> Unit,
+    isLoading: Boolean
+    ) {
+        Column(
+        modifier = Modifier.fillMaxSize(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+            ) {
+                Text(
+                    text = "AI Advent Calendar",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.padding(bottom = 24.dp)
+                )
+        
+                Text(
+            text = "Enter Agent ID",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        
+        Row(
+            modifier = Modifier.fillMaxWidth().widthIn(max = 400.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+            OutlinedTextField(
+                value = agentId,
+                onValueChange = onAgentIdChange,
+                label = { Text("Agent ID") },
                 modifier = Modifier
                     .weight(1f)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.key == Key.Enter && 
+                            keyEvent.type == KeyEventType.KeyDown && 
+                            !keyEvent.isShiftPressed
+                        ) {
+                            if (agentId.isNotBlank() && !isLoading) {
+                                onAgentIdSubmit()
+                                true
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        }
+                    },
+                enabled = !isLoading,
+                singleLine = true
+            )
+            
+            Button(
+                onClick = onAgentIdSubmit,
+                enabled = !isLoading && agentId.isNotBlank()
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Text("Continue")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SplitLayoutScreen(
+    agentId: String,
+    chats: List<ChatSummary>,
+    currentChatId: String?,
+    messages: List<ChatMessage>,
+    inputText: String,
+    onInputChange: (String) -> Unit,
+    onNewChat: () -> Unit,
+    onChatSelected: (String) -> Unit,
+    onSend: () -> Unit,
+    onBack: () -> Unit,
+    isLoading: Boolean,
+    listState: androidx.compose.foundation.lazy.LazyListState
+) {
+    Row(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        // Left Sidebar - Chat List
+        Column(
+            modifier = Modifier
+                .widthIn(min = 250.dp, max = 350.dp)
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Sidebar Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Agent: $agentId",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = onBack,
+                    modifier = Modifier.padding(start = 4.dp)
+                ) {
+                    Text("←")
+                }
+            }
+            
+            Button(
+                onClick = onNewChat,
+                enabled = !isLoading,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("+ New Chat")
+            }
+            
+            // Chat List
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (chats.isEmpty()) {
+                    item {
+            Text(
+                            text = "No chats yet.\nClick 'New Chat' to start.",
+                            modifier = Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    items(chats) { chat ->
+                        ChatListItem(
+                            chat = chat,
+                            isSelected = chat.id == currentChatId,
+                            onClick = { onChatSelected(chat.id) }
+                        )
+                    }
+                }
+            }
+        }
+        
+        // Right Side - Current Chat View
+        if (currentChatId != null) {
+            ChatViewScreen(
+                agentId = agentId,
+                chatId = currentChatId,
+                messages = messages,
+                inputText = inputText,
+                onInputChange = onInputChange,
+                onSend = onSend,
+                isLoading = isLoading,
+                listState = listState,
+                modifier = Modifier.weight(1f)
+            )
+        } else {
+            // Empty state when no chat selected
+        Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxSize()
+                    .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                    text = "Select a chat from the sidebar or create a new one",
+                    style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun ChatListItem(chat: ChatSummary, isSelected: Boolean, onClick: () -> Unit) {
+    val dateFormat = SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault())
+    val dateStr = dateFormat.format(Date(chat.updatedAt * 1000))
+    
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    
+    val contentColor = if (isSelected) {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+    
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        colors = CardDefaults.cardColors(containerColor = backgroundColor),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = if (isSelected) 4.dp else 1.dp
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = dateStr,
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isSelected) contentColor.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = chat.lastMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = contentColor,
+                maxLines = 2
+            )
+        }
+    }
+}
+
+@Composable
+fun ChatViewScreen(
+    agentId: String,
+    chatId: String,
+    messages: List<ChatMessage>,
+    inputText: String,
+    onInputChange: (String) -> Unit,
+    onSend: () -> Unit,
+    isLoading: Boolean,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        // Chat Header
+        Text(
+            text = "Chat",
+            style = MaterialTheme.typography.titleLarge
+        )
+        
+        // Messages Area
+            LazyColumn(
+                state = listState,
+            modifier = Modifier
+                .weight(1f)
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(messages) { message ->
@@ -108,11 +515,12 @@ fun ChatApp(backendClient: BackendClient) {
 
                 if (isLoading) {
                     item {
-                        ChatBubble(message = ChatMessage(text = "Thinking...", isUser = false))
-                    }
+                    ChatBubble(message = ChatMessage(text = "Thinking...", isUser = false))
                 }
             }
+        }
 
+        // Input Area
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -120,8 +528,8 @@ fun ChatApp(backendClient: BackendClient) {
                 ) {
                     OutlinedTextField(
                         value = inputText,
-                    onValueChange = { inputText = it },
-                    label = { Text("Type your message...") },
+                        onValueChange = onInputChange,
+                label = { Text("Type your message...") },
                         modifier = Modifier
                             .weight(1f)
                             .onPreviewKeyEvent { keyEvent ->
@@ -130,38 +538,13 @@ fun ChatApp(backendClient: BackendClient) {
                                     !keyEvent.isShiftPressed
                                 ) {
                                     if (inputText.isNotBlank() && !isLoading) {
-                                    coroutineScope.launch {
-                                        val text = inputText
-                                        inputText = ""
-                                        messages = messages + ChatMessage(text = text, isUser = true)
-                                        isLoading = true
-                                        
-                                        try {
-                                            val response = backendClient.sendMessage(
-                                                message = text,
-                                                history = emptyList(),
-                                                temperature = 0.7
-                                            )
-                                            
-                                            val parsed = backendClient.parseResponse(response)
-                                            val answerText = when (parsed) {
-                                                is AgentResponse.Answer -> parsed.answer
-                                                else -> response
-                                            }
-                                            
-                                            messages = messages + ChatMessage(text = answerText, isUser = false)
-                                        } catch (e: Exception) {
-                                            messages = messages + ChatMessage(text = "Error: ${e.message}", isUser = false)
-                                        } finally {
-                                            isLoading = false
-                                        }
+                                        onSend()
+                                true
+                                    } else {
+                                true
                                     }
-                                    true
                                 } else {
-                                    true
-                                }
-                            } else {
-                                false
+                            false
                                 }
                             },
                         enabled = !isLoading,
@@ -169,38 +552,9 @@ fun ChatApp(backendClient: BackendClient) {
                         maxLines = 3
                     )
 
-                Button(
-                    onClick = {
-                        if (inputText.isNotBlank() && !isLoading) {
-                            coroutineScope.launch {
-                                val text = inputText
-                                inputText = ""
-                                messages = messages + ChatMessage(text = text, isUser = true)
-                                isLoading = true
-                                
-                                try {
-                                    val response = backendClient.sendMessage(
-                                        message = text,
-                                        history = emptyList(),
-                                        temperature = 0.7
-                                    )
-                                    
-                                    val parsed = backendClient.parseResponse(response)
-                                    val answerText = when (parsed) {
-                                        is AgentResponse.Answer -> parsed.answer
-                                        else -> response
-                                    }
-                                    
-                                    messages = messages + ChatMessage(text = answerText, isUser = false)
-                                } catch (e: Exception) {
-                                    messages = messages + ChatMessage(text = "Error: ${e.message}", isUser = false)
-                                } finally {
-                                    isLoading = false
-                                }
-                            }
-                        }
-                    },
-                    enabled = !isLoading && inputText.isNotBlank()
+            Button(
+                        onClick = onSend,
+                enabled = !isLoading && inputText.isNotBlank()
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(
@@ -209,7 +563,6 @@ fun ChatApp(backendClient: BackendClient) {
                         )
                     } else {
                         Text("Send")
-                    }
                 }
             }
         }
@@ -245,10 +598,10 @@ fun ChatBubble(message: ChatMessage) {
                     modifier = Modifier.padding(12.dp),
                         style = MaterialTheme.typography.bodyLarge
                     )
-                }
             }
         }
     }
+}
 
 fun parseMarkdown(text: String, baseColor: Color): AnnotatedString {
     return buildAnnotatedString {

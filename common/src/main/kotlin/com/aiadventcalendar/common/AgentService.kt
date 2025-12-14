@@ -1,5 +1,6 @@
 package com.aiadventcalendar.common
 
+import ai.koog.prompt.dsl.Prompt
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
@@ -11,6 +12,8 @@ import kotlinx.datetime.Clock
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.util.UUID
+import kotlin.math.abs
 
 /**
  * Represents a message in the conversation history.
@@ -18,7 +21,9 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class HistoryMessage(
     val role: String,  // "user" or "assistant"
-    val content: String
+    val content: String,
+    val agentId: String,
+    val chatId: String
 )
 
 /**
@@ -100,6 +105,27 @@ sealed class AgentResponse {
 }
 
 /**
+ * Represents a chat conversation.
+ */
+@Serializable
+data class Chat(
+    val id: String,
+    val agentId: String,
+    val messages: MutableList<HistoryMessage> = mutableListOf(),
+    val createdAt: Long,
+    var updatedAt: Long
+)
+
+/**
+ * Data class to store agent information and chats.
+ */
+data class AgentData(
+    val agentId: String,
+    val chats: MutableMap<String, Chat> = mutableMapOf(),
+    val createdAt: Long
+)
+
+/**
  * Temperature presets for LLM experimentation.
  * Each preset demonstrates different characteristics.
  */
@@ -110,18 +136,17 @@ enum class TemperaturePreset(val value: Double, val label: String, val descripti
 
     companion object {
         fun fromValue(value: Double): TemperaturePreset {
-            return entries.minByOrNull { kotlin.math.abs(it.value - value) } ?: BALANCED
+            return entries.minByOrNull { abs(it.value - value) } ?: BALANCED
         }
     }
 }
 
-class AgentService(private val apiKey: String) {
+class AgentService(apiKey: String, dbPath: String = "agents.db") {
     val client = OpenAILLMClient(apiKey)
-    var historyPrompt = prompt(
-        id = "running-prompt",
-    ) {
-        system("You are helpfully assistant")
-    }
+    
+    private val db = DatabaseHelper(dbPath)
+    
+    private val systemPromptText = "You are helpfully assistant"
 
     var summarizerPrompt = prompt(
         id = "summarize-prompt"
@@ -136,46 +161,143 @@ class AgentService(private val apiKey: String) {
         isLenient = true
         classDiscriminator = "type"
     }
+    
+    // Cache for prompts to avoid rebuilding from DB on every call
+    private val promptCache: MutableMap<String, Prompt> = mutableMapOf()
+
+    /**
+     * Creates or retrieves an existing agent by ID.
+     */
+    fun createOrGetAgent(agentId: String): AgentData {
+        val now = Clock.System.now().toEpochMilliseconds() / 1000
+        val createdAt = db.createOrGetAgent(agentId, now)
+        return AgentData(
+            agentId = agentId,
+            createdAt = createdAt
+        )
+    }
+    
+    /**
+     * Builds a prompt from stored messages in the database.
+     */
+    private fun buildPromptFromChat(agentId: String, chatId: String): Prompt {
+        val chat = db.getChat(chatId) ?: throw IllegalStateException("Chat not found: $chatId")
+        
+        return prompt(id = "chat-$chatId") {
+            system(systemPromptText)
+            
+            // Add all stored messages to the prompt
+            chat.messages.forEach { msg ->
+                when (msg.role) {
+                    "user" -> user(msg.content)
+                    "assistant" -> assistant(msg.content)
+                    else -> {} // Skip other roles
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns all chats for an agent, sorted by updatedAt descending.
+     */
+    fun getChatHistory(agentId: String): List<Chat> {
+        if (!db.agentExists(agentId)) {
+            return emptyList()
+        }
+        return db.getChatsForAgent(agentId)
+    }
+
+    /**
+     * Creates a new chat for the specified agent.
+     */
+    fun createChat(agentId: String): Chat {
+        createOrGetAgent(agentId) // Ensure agent exists
+        val chatId = UUID.randomUUID().toString()
+        val now = Clock.System.now().toEpochMilliseconds() / 1000
+
+        db.createChat(chatId, agentId, now, now)
+        
+        // Initialize prompt cache
+        val newPrompt = prompt(id = "chat-$chatId") {
+            system(systemPromptText)
+        }
+        promptCache["$agentId:$chatId"] = newPrompt
+
+        return Chat(
+            id = chatId,
+            agentId = agentId,
+            messages = mutableListOf(),
+            createdAt = now,
+            updatedAt = now
+        )
+    }
+
+    /**
+     * Retrieves a specific chat by agent ID and chat ID.
+     */
+    fun getChat(agentId: String, chatId: String): Chat? {
+        return db.getChat(chatId)?.takeIf { it.agentId == agentId }
+    }
+
+    /**
+     * Adds a message to a chat and updates the updatedAt timestamp.
+     */
+    private fun addMessageToChat(message: HistoryMessage) {
+        val now = Clock.System.now().toEpochMilliseconds() / 1000
+        db.addMessage(message, now)
+        // Invalidate prompt cache for this chat
+        promptCache.remove("${message.agentId}:${message.chatId}")
+    }
 
     /**
      * Processes a user message and returns a direct answer.
      *
+     * @param agentId The agent ID
+     * @param chatId The chat ID
      * @param userMessage The user's message/question
-     * @param historyMessages Previous conversation history (kept for API compatibility)
      * @param temperature LLM temperature (0.0 = precise, 0.7 = balanced, 1.2+ = creative)
      * @return JSON string with type "answer"
      */
     suspend fun processMessage(
+        agentId: String,
+        chatId: String,
         userMessage: String,
-        historyMessages: List<HistoryMessage> = emptyList(),
         temperature: Double = 0.7
     ): String = withContext(Dispatchers.IO) {
+        val chat = getChat(agentId, chatId)
+            ?: throw IllegalStateException("Chat not found: agentId=$agentId, chatId=$chatId")
+
+        // Get or build prompt from cache or database
+        val cacheKey = "$agentId:${chat.id}"
+        var historyPrompt = promptCache[cacheKey] ?: buildPromptFromChat(agentId, chat.id)
+        
+        // Store user message first
+        val userMessageObj = HistoryMessage(
+            role = "user",
+            content = userMessage,
+            agentId = agentId,
+            chatId = chatId
+        )
+        addMessageToChat(userMessageObj)
+
+        // Add user message to prompt
         historyPrompt = prompt(existing = historyPrompt) {
             user(userMessage)
         }
+        promptCache[cacheKey] = historyPrompt
 
         val responses = client.execute(
             prompt = historyPrompt,
             model = model
         )
 
-        historyPrompt = if ((historyPrompt.messages.count() + responses.size) % 11 == 0) {
-            summarizerPrompt = summarizerPrompt.copy(
-                messages = buildList {
-                    add(summarizerPrompt.messages.first())
-                    addAll(historyPrompt.messages.subList(1, historyPrompt.messages.lastIndex))
-                    addAll(responses)
-                    add(
-                        Message.User(
-                            "Summarize history messages",
-                            metaInfo = RequestMetaInfo(Clock.System.now())
-                        )
-                    )
-                }
+        val updatedPrompt = if ((historyPrompt.messages.count() + responses.size) % 11 == 0) {
+            val summaryPrompt = getSummaryPromptFromHistoryPrompt(
+                historyPrompt = historyPrompt.copy(messages = historyPrompt.messages + responses)
             )
 
             val response = client.execute(
-                prompt = summarizerPrompt,
+                prompt = summaryPrompt,
                 model = OpenAIModels.Reasoning.O3Mini
             )
 
@@ -184,7 +306,9 @@ class AgentService(private val apiKey: String) {
             prompt(id = historyPrompt.id) {
                 val sysMessage = historyPrompt.messages.first()
                 message(sysMessage)
-                messages(response)
+                response.firstOrNull()?.let {
+                    system(it.content)
+                }
             }
         } else {
             prompt(historyPrompt) {
@@ -192,98 +316,65 @@ class AgentService(private val apiKey: String) {
             }
         }
 
+        promptCache[cacheKey] = updatedPrompt
+
+        // Store assistant responses
+        responses.forEach { response ->
+            val assistantMessage = HistoryMessage(
+                role = "assistant",
+                content = response.content,
+                agentId = agentId,
+                chatId = chatId
+            )
+            addMessageToChat(assistantMessage)
+        }
+
         return@withContext responses.joinToString { "${it.content} \n---Tokens info: ---\ninput tokens with history: ${it.metaInfo.inputTokensCount}, output tokens: ${it.metaInfo.outputTokensCount} \ntotal tokens used per session: ${it.metaInfo.totalTokensCount}" }
     }
 
-    /**
-     * Parses the agent response JSON into a typed AgentResponse object.
-     */
-    fun parseResponse(responseJson: String): AgentResponse? {
-        return try {
-            // First try to determine the type
-            val typeRegex = """"type"\s*:\s*"(\w+)"""".toRegex()
-            val typeMatch = typeRegex.find(responseJson)
-            val type = typeMatch?.groupValues?.get(1)
-
-            when (type) {
-                "required_questions" -> {
-                    val parsed = json.decodeFromString<RequiredQuestionsResponse>(responseJson)
-                    AgentResponse.RequiredQuestions(
-                        questions = parsed.questions,
-                        totalQuestions = parsed.totalQuestions,
-                        currentQuestionIndex = parsed.currentQuestionIndex
+    private fun getSummaryPromptFromHistoryPrompt(historyPrompt: Prompt): Prompt {
+        return summarizerPrompt.copy(
+            messages = buildList {
+                add(summarizerPrompt.messages.first())
+                try {
+                    val prevSummary = historyPrompt.messages[1]
+                    val prevSummaryExists = prevSummary.role == Message.Role.System
+                    if (prevSummaryExists) {
+                        Message.System(
+                            content = "This is not the first iteration of summarizing, please use this one as summary of previous dialog history: ${historyPrompt.messages[1].content}",
+                            metaInfo = RequestMetaInfo(
+                                timestamp = prevSummary.metaInfo.timestamp,
+                                metadata = prevSummary.metaInfo.metadata,
+                            )
+                        )
+                    }
+                } catch (_: Exception) {
+                }
+                add(
+                    Message.User(
+                        getSummaryTextPrompt(
+                            historyMessage = historyPrompt.messages.filter { it.role != Message.Role.System }
+                        ),
+                        metaInfo = RequestMetaInfo(Clock.System.now())
                     )
-                }
-
-                "question" -> {
-                    val parsed = json.decodeFromString<QuestionResponse>(responseJson)
-                    AgentResponse.Question(
-                        questionId = parsed.questionId,
-                        question = parsed.question,
-                        category = parsed.category,
-                        remainingQuestions = parsed.remainingQuestions
-                    )
-                }
-
-                "answer" -> {
-                    val parsed = json.decodeFromString<AnswerResponse>(responseJson)
-                    AgentResponse.Answer(answer = parsed.answer)
-                }
-
-                else -> null
+                )
             }
-        } catch (e: Exception) {
-            null
-        }
+        )
     }
 
-    private fun getConversationalSystemPrompt(): String {
-        return """
-        You are a helpful, creative, and knowledgeable AI assistant.
-        
-        ## YOUR ROLE
-        - Answer questions directly and immediately
-        - Be helpful, informative, and engaging
-        - Adapt your style based on the question type
-        
-        ## RESPONSE FORMAT
-        Always respond with this JSON format:
-        {"type":"answer","answer":"Your response here..."}
-        
-        ## GUIDELINES
-        
-        ### For Creative Tasks (poems, stories, ideas):
-        - Be imaginative and expressive
-        - Use vivid language and interesting metaphors
-        - Don't be afraid to be unique and surprising
-        
-        ### For Factual Questions:
-        - Be accurate and informative
-        - Explain concepts clearly
-        - Use examples when helpful
-        
-        ### For Brainstorming:
-        - Generate diverse and varied ideas
-        - Think outside the box
-        - Include both practical and creative suggestions
-        
-        ## FORMATTING
-        - Use Markdown in your answers
-        - Use headers (##, ###) for structure when appropriate
-        - Use bullet points and numbered lists for clarity
-        - Use **bold** for emphasis
-        - Keep responses focused and well-organized
-        
-        ## LANGUAGE
-        - Respond in the same language as the user's question
-        - Match the tone of the question (formal/casual)
-        
-        ## CRITICAL RULES
-        1. ALWAYS respond with valid JSON: {"type":"answer","answer":"..."}
-        2. Do NOT wrap response in ```json blocks
-        3. Do NOT ask clarifying questions - just answer directly
-        4. The "type" field must always be "answer"
-        5. Put your full response in the "answer" field
-    """.trimIndent()
+    private fun getSummaryTextPrompt(
+        historyMessage: List<Message>
+    ): String {
+        return buildString {
+            appendLine("Please Summarize history messages of my chat with Agent to keep main info and points of discussed topic")
+            historyMessage.forEach {
+                if (it.role == Message.Role.Assistant) {
+                    appendLine("Agent: ${it.content}")
+                } else {
+                    appendLine("User: ${it.content}")
+
+                }
+            }
+        }
     }
 }

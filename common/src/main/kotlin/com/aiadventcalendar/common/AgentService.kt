@@ -1,5 +1,8 @@
 package com.aiadventcalendar.common
 
+import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.mcp.McpToolRegistryProvider
+import ai.koog.agents.mcp.defaultStdioTransport
 import ai.koog.prompt.dsl.Prompt
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
@@ -7,6 +10,7 @@ import ai.koog.prompt.executor.clients.openai.OpenAIModels
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.datetime.Clock
 import kotlinx.serialization.SerialName
@@ -143,10 +147,49 @@ enum class TemperaturePreset(val value: Double, val label: String, val descripti
 
 class AgentService(apiKey: String, dbPath: String = "agents.db") {
     val client = OpenAILLMClient(apiKey)
-    
+
     private val db = DatabaseHelper(dbPath)
-    
+
     private val systemPromptText = "You are helpfully assistant"
+
+    private val mcpJarPath: String = run {
+        // Try multiple possible locations for the JAR file (in order of preference)
+        val possiblePaths = listOfNotNull(
+            // From environment variable if set (highest priority)
+            System.getenv("MCP_JAR_PATH"),
+            // From system property if set
+            System.getProperty("mcp.jar.path"),
+            // Standard build location when running from project root
+            "mcp/build/libs/mcp-0.1.0-all.jar",
+            // When running from common module directory
+            "../mcp/build/libs/mcp-0.1.0-all.jar",
+            // When running from project root - source location (fallback)
+            "mcp/src/main/kotlin/com/aiadventcalendar/mcp/mcp-0.1.0-all.jar",
+            // When running from common module - source location (fallback)
+            "../mcp/src/main/kotlin/com/aiadventcalendar/mcp/mcp-0.1.0-all.jar"
+        )
+
+        // Find the first existing file
+        val foundPath = possiblePaths.firstOrNull { path ->
+            java.io.File(path).exists()
+        }
+
+        foundPath ?: throw IllegalStateException(
+            "MCP JAR file not found. Searched in: ${possiblePaths.joinToString(", ")}. " +
+                    "Please build the MCP module first with: ./gradlew :mcp:shadowJar " +
+                    "or set MCP_JAR_PATH environment variable or mcp.jar.path system property."
+        )
+    }
+
+    private val process = ProcessBuilder("java", "-jar", mcpJarPath).start()
+    val transport = McpToolRegistryProvider.defaultStdioTransport(process)
+    private val toolRegistry: ToolRegistry = runBlocking {
+        McpToolRegistryProvider.fromTransport(
+            transport = transport,
+            name = "my-client",
+            version = "1.0.0"
+        )
+    }
 
     var summarizerPrompt = prompt(
         id = "summarize-prompt"
@@ -161,7 +204,7 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
         isLenient = true
         classDiscriminator = "type"
     }
-    
+
     // Cache for prompts to avoid rebuilding from DB on every call
     private val promptCache: MutableMap<String, Prompt> = mutableMapOf()
 
@@ -176,16 +219,20 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
             createdAt = createdAt
         )
     }
-    
+
+    fun getTools(): List<String> {
+        return toolRegistry.tools.map { it.name }
+    }
+
     /**
      * Builds a prompt from stored messages in the database.
      */
     private fun buildPromptFromChat(agentId: String, chatId: String): Prompt {
         val chat = db.getChat(chatId) ?: throw IllegalStateException("Chat not found: $chatId")
-        
+
         return prompt(id = "chat-$chatId") {
             system(systemPromptText)
-            
+
             // Add all stored messages to the prompt
             chat.messages.forEach { msg ->
                 when (msg.role) {
@@ -216,7 +263,7 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
         val now = Clock.System.now().toEpochMilliseconds() / 1000
 
         db.createChat(chatId, agentId, now, now)
-        
+
         // Initialize prompt cache
         val newPrompt = prompt(id = "chat-$chatId") {
             system(systemPromptText)
@@ -270,7 +317,7 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
         // Get or build prompt from cache or database
         val cacheKey = "$agentId:${chat.id}"
         var historyPrompt = promptCache[cacheKey] ?: buildPromptFromChat(agentId, chat.id)
-        
+
         // Store user message first
         val userMessageObj = HistoryMessage(
             role = "user",

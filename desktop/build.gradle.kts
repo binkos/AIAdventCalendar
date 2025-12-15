@@ -1,23 +1,20 @@
 plugins {
-    kotlin("jvm")
-    kotlin("plugin.serialization") version "2.1.0"
-    id("org.jetbrains.kotlin.plugin.compose") version "2.1.0"
-    id("org.jetbrains.compose") version "1.7.0-alpha01"
+    alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.compose)
 }
 
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
-    implementation("io.ktor:ktor-client-core:3.3.0")
-    implementation("io.ktor:ktor-client-cio:3.3.0")
-    implementation("io.ktor:ktor-client-content-negotiation:3.3.0")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:3.3.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+    implementation(libs.bundles.ktor.client)
+    implementation(libs.kotlinx.coroutines.swing)
+    implementation(libs.kotlinx.serialization.json)
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(libs.versions.jvm.target.get().toInt())
 }
 
 compose.desktop {

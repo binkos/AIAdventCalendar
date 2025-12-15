@@ -137,6 +137,9 @@ fun Application.configureApplication(apiKey: String) {
                         try {
                             val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
                             val chatId = call.parameters["chatId"] ?: throw IllegalArgumentException("chatId is required")
+
+                            println(agentService.getTools())
+
                             val chat = agentService.getChat(agentId, chatId)
                                 ?: throw IllegalStateException("Chat not found")
                             call.respond(HttpStatusCode.OK, ChatResponse(chat = chat))

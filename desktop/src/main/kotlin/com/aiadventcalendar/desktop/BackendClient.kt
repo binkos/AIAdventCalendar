@@ -25,7 +25,9 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class HistoryMessage(
     val role: String,  // "user" or "assistant"
-    val content: String
+    val content: String,
+    val agentId: String,
+    val chatId: String
 )
 
 /**
@@ -95,25 +97,108 @@ class BackendClient(private val baseUrl: String) {
     }
     
     /**
-     * Sends a message to the conversational agent with history.
+     * Gets or creates an agent and returns its info with chat history.
+     */
+    suspend fun getAgent(agentId: String): AgentInfoResponse = withContext(Dispatchers.IO) {
+        try {
+            val response: HttpResponse = httpClient.get("$baseUrl/agents/$agentId") {
+                contentType(ContentType.Application.Json)
+            }
+            
+            if (response.status == HttpStatusCode.OK) {
+                response.body()
+            } else {
+                val errorResponse: ErrorResponse = response.body()
+                throw Exception(errorResponse.error ?: "Unknown error from backend")
+            }
+        } catch (e: Exception) {
+            throw Exception("Failed to get agent: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Creates a new chat for the specified agent.
+     */
+    suspend fun createChat(agentId: String): CreateChatResponse = withContext(Dispatchers.IO) {
+        try {
+            val request = CreateChatRequest(agentId = agentId)
+            val response: HttpResponse = httpClient.post("$baseUrl/agents/$agentId/chats") {
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+            
+            if (response.status == HttpStatusCode.OK) {
+                response.body()
+            } else {
+                val errorResponse: ErrorResponse = response.body()
+                throw Exception(errorResponse.error ?: "Unknown error from backend")
+            }
+        } catch (e: Exception) {
+            throw Exception("Failed to create chat: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Gets chat history for an agent.
+     */
+    suspend fun getChatHistory(agentId: String): ChatHistoryResponse = withContext(Dispatchers.IO) {
+        try {
+            val response: HttpResponse = httpClient.get("$baseUrl/agents/$agentId/chats") {
+                contentType(ContentType.Application.Json)
+            }
+            
+            if (response.status == HttpStatusCode.OK) {
+                response.body()
+            } else {
+                val errorResponse: ErrorResponse = response.body()
+                throw Exception(errorResponse.error ?: "Unknown error from backend")
+            }
+        } catch (e: Exception) {
+            throw Exception("Failed to get chat history: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Gets a specific chat by ID.
+     */
+    suspend fun getChat(agentId: String, chatId: String): ChatResponse = withContext(Dispatchers.IO) {
+        try {
+            val response: HttpResponse = httpClient.get("$baseUrl/agents/$agentId/chats/$chatId") {
+                contentType(ContentType.Application.Json)
+            }
+            
+            if (response.status == HttpStatusCode.OK) {
+                response.body()
+            } else {
+                val errorResponse: ErrorResponse = response.body()
+                throw Exception(errorResponse.error ?: "Unknown error from backend")
+            }
+        } catch (e: Exception) {
+            throw Exception("Failed to get chat: ${e.message}", e)
+        }
+    }
+    
+    /**
+     * Sends a message to a specific chat.
      * Returns the raw JSON response string.
      * 
+     * @param agentId The agent ID
+     * @param chatId The chat ID
      * @param message The user message to send
-     * @param history Previous conversation history
      * @param temperature LLM temperature (0.0 = precise, 0.7 = balanced, 1.2+ = creative)
      */
     suspend fun sendMessage(
+        agentId: String,
+        chatId: String,
         message: String,
-        history: List<HistoryMessage> = emptyList(),
         temperature: Double = 0.7
     ): String = withContext(Dispatchers.IO) {
         try {
-            val request = ConversationRequest(
+            val request = SendMessageRequest(
                 message = message,
-                history = history.map { ConversationHistoryItem(role = it.role, content = it.content) },
                 temperature = temperature
             )
-            val response: HttpResponse = httpClient.post("$baseUrl/conversation") {
+            val response: HttpResponse = httpClient.post("$baseUrl/agents/$agentId/chats/$chatId/messages") {
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
@@ -167,16 +252,53 @@ class BackendClient(private val baseUrl: String) {
 }
 
 @Serializable
-private data class ConversationRequest(
-    val message: String,
-    val history: List<ConversationHistoryItem> = emptyList(),
-    val temperature: Double = 0.7
+data class AgentInfoResponse(
+    val agentId: String,
+    val chats: List<ChatSummary>
 )
 
 @Serializable
-private data class ConversationHistoryItem(
-    val role: String,
-    val content: String
+data class ChatSummary(
+    val id: String,
+    val agentId: String,
+    val lastMessage: String,
+    val updatedAt: Long
+)
+
+@Serializable
+data class Chat(
+    val id: String,
+    val agentId: String,
+    val messages: List<HistoryMessage>,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
+@Serializable
+private data class CreateChatRequest(
+    val agentId: String
+)
+
+@Serializable
+data class CreateChatResponse(
+    val chatId: String,
+    val createdAt: Long
+)
+
+@Serializable
+data class ChatHistoryResponse(
+    val chats: List<ChatSummary>
+)
+
+@Serializable
+data class ChatResponse(
+    val chat: Chat
+)
+
+@Serializable
+private data class SendMessageRequest(
+    val message: String,
+    val temperature: Double = 0.7
 )
 
 @Serializable

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -22,6 +21,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -88,9 +88,10 @@ fun ChatApp(backendClient: BackendClient) {
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }
     var currentChatId by remember { mutableStateOf<String?>(null) }
     var messages by remember { mutableStateOf<Map<String, List<ChatMessage>>>(emptyMap()) }
+    var tools by remember { mutableStateOf<List<String>>(emptyList()) }
     var inputText by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
-    
+
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
@@ -107,6 +108,7 @@ fun ChatApp(backendClient: BackendClient) {
                                 isUser = msg.role == "user"
                             )
                         })
+                        tools = chatResponse.tools
                     } catch (e: Exception) {
                         // Error loading chat
                     }
@@ -127,12 +129,12 @@ fun ChatApp(backendClient: BackendClient) {
     MaterialTheme {
         when (currentScreen) {
             AppScreen.AGENT_INPUT -> {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     AgentInputScreen(
                         agentId = inputAgentId,
                         onAgentIdChange = { inputAgentId = it },
@@ -157,15 +159,16 @@ fun ChatApp(backendClient: BackendClient) {
                     )
                 }
             }
-            
+
             AppScreen.CHAT_VIEW -> {
                 SplitLayoutScreen(
                     agentId = agentId,
                     chats = chats,
                     currentChatId = currentChatId,
                     messages = messages[currentChatId] ?: emptyList(),
-                inputText = inputText,
-                onInputChange = { inputText = it },
+                    tools = tools,
+                    inputText = inputText,
+                    onInputChange = { inputText = it },
                     onNewChat = {
                         coroutineScope.launch {
                             try {
@@ -190,9 +193,12 @@ fun ChatApp(backendClient: BackendClient) {
                                     val text = inputText
                                     inputText = ""
                                     val currentMessages = messages[chatId] ?: emptyList()
-                                    messages = messages + (chatId to (currentMessages + ChatMessage(text = text, isUser = true)))
+                                    messages = messages + (chatId to (currentMessages + ChatMessage(
+                                        text = text,
+                                        isUser = true
+                                    )))
                                     isLoading = true
-                                    
+
                                     try {
                                         val response = backendClient.sendMessage(
                                             agentId = agentId,
@@ -200,30 +206,40 @@ fun ChatApp(backendClient: BackendClient) {
                                             message = text,
                                             temperature = 0.7
                                         )
-                                        
+
                                         val parsed = backendClient.parseResponse(response)
                                         val answerText = when (parsed) {
                                             is AgentResponse.Answer -> parsed.answer
                                             else -> response
                                         }
-                                        
+
                                         val updatedMessages = messages[chatId] ?: emptyList()
-                                        messages = messages + (chatId to (updatedMessages + ChatMessage(text = answerText, isUser = false)))
-                                        
+                                        messages =
+                                            messages + (chatId to (updatedMessages + ChatMessage(
+                                                text = answerText,
+                                                isUser = false
+                                            )))
+
                                         // Refresh chat history
                                         chats = backendClient.getChatHistory(agentId).chats
-                                        
+
                                         // Reload full chat to sync with server
                                         val chatResponse = backendClient.getChat(agentId, chatId)
-                                        messages = messages + (chatId to chatResponse.chat.messages.map { msg ->
-                                            ChatMessage(
-                                                text = msg.content,
-                                                isUser = msg.role == "user"
-                                            )
-                                        })
+                                        messages =
+                                            messages + (chatId to chatResponse.chat.messages.map { msg ->
+                                                ChatMessage(
+                                                    text = msg.content,
+                                                    isUser = msg.role == "user"
+                                                )
+                                            })
+                                        tools = chatResponse.tools
                                     } catch (e: Exception) {
                                         val errorMessages = messages[chatId] ?: emptyList()
-                                        messages = messages + (chatId to (errorMessages + ChatMessage(text = "Error: ${e.message}", isUser = false)))
+                                        messages =
+                                            messages + (chatId to (errorMessages + ChatMessage(
+                                                text = "Error: ${e.message}",
+                                                isUser = false
+                                            )))
                                     } finally {
                                         isLoading = false
                                     }
@@ -238,7 +254,7 @@ fun ChatApp(backendClient: BackendClient) {
                         currentChatId = null
                         messages = emptyMap()
                     },
-                isLoading = isLoading,
+                    isLoading = isLoading,
                     listState = listState
                 )
             }
@@ -252,28 +268,28 @@ fun AgentInputScreen(
     onAgentIdChange: (String) -> Unit,
     onAgentIdSubmit: () -> Unit,
     isLoading: Boolean
-    ) {
-        Column(
+) {
+    Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
-            ) {
-                Text(
-                    text = "AI Advent Calendar",
+    ) {
+        Text(
+            text = "AI Advent Calendar",
             style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.padding(bottom = 24.dp)
-                )
-        
-                Text(
+        )
+
+        Text(
             text = "Enter Agent ID",
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(bottom = 8.dp)
         )
-        
+
         Row(
             modifier = Modifier.fillMaxWidth().widthIn(max = 400.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             OutlinedTextField(
                 value = agentId,
                 onValueChange = onAgentIdChange,
@@ -281,8 +297,8 @@ fun AgentInputScreen(
                 modifier = Modifier
                     .weight(1f)
                     .onPreviewKeyEvent { keyEvent ->
-                        if (keyEvent.key == Key.Enter && 
-                            keyEvent.type == KeyEventType.KeyDown && 
+                        if (keyEvent.key == Key.Enter &&
+                            keyEvent.type == KeyEventType.KeyDown &&
                             !keyEvent.isShiftPressed
                         ) {
                             if (agentId.isNotBlank() && !isLoading) {
@@ -298,7 +314,7 @@ fun AgentInputScreen(
                 enabled = !isLoading,
                 singleLine = true
             )
-            
+
             Button(
                 onClick = onAgentIdSubmit,
                 enabled = !isLoading && agentId.isNotBlank()
@@ -322,6 +338,7 @@ fun SplitLayoutScreen(
     chats: List<ChatSummary>,
     currentChatId: String?,
     messages: List<ChatMessage>,
+    tools: List<String>,
     inputText: String,
     onInputChange: (String) -> Unit,
     onNewChat: () -> Unit,
@@ -361,7 +378,7 @@ fun SplitLayoutScreen(
                     Text("←")
                 }
             }
-            
+
             Button(
                 onClick = onNewChat,
                 enabled = !isLoading,
@@ -369,7 +386,7 @@ fun SplitLayoutScreen(
             ) {
                 Text("+ New Chat")
             }
-            
+
             // Chat List
             LazyColumn(
                 modifier = Modifier.weight(1f),
@@ -377,10 +394,10 @@ fun SplitLayoutScreen(
             ) {
                 if (chats.isEmpty()) {
                     item {
-            Text(
+                        Text(
                             text = "No chats yet.\nClick 'New Chat' to start.",
                             modifier = Modifier.padding(16.dp),
-                style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -395,13 +412,14 @@ fun SplitLayoutScreen(
                 }
             }
         }
-        
+
         // Right Side - Current Chat View
         if (currentChatId != null) {
             ChatViewScreen(
                 agentId = agentId,
                 chatId = currentChatId,
                 messages = messages,
+                tools = tools,
                 inputText = inputText,
                 onInputChange = onInputChange,
                 onSend = onSend,
@@ -411,18 +429,18 @@ fun SplitLayoutScreen(
             )
         } else {
             // Empty state when no chat selected
-        Column(
+            Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxSize()
                     .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Text(
                     text = "Select a chat from the sidebar or create a new one",
                     style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -433,19 +451,19 @@ fun SplitLayoutScreen(
 fun ChatListItem(chat: ChatSummary, isSelected: Boolean, onClick: () -> Unit) {
     val dateFormat = SimpleDateFormat("MMM dd, yyyy HH:mm", Locale.getDefault())
     val dateStr = dateFormat.format(Date(chat.updatedAt * 1000))
-    
+
     val backgroundColor = if (isSelected) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
         MaterialTheme.colorScheme.surface
     }
-    
+
     val contentColor = if (isSelected) {
         MaterialTheme.colorScheme.onPrimaryContainer
     } else {
         MaterialTheme.colorScheme.onSurface
     }
-    
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -479,6 +497,7 @@ fun ChatViewScreen(
     agentId: String,
     chatId: String,
     messages: List<ChatMessage>,
+    tools: List<String>,
     inputText: String,
     onInputChange: (String) -> Unit,
     onSend: () -> Unit,
@@ -497,72 +516,100 @@ fun ChatViewScreen(
             text = "Chat",
             style = MaterialTheme.typography.titleLarge
         )
-        
+
+        // Tools Display as Chips
+        if (tools.isNotEmpty()) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Available Tools:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    tools.chunked(4).forEach { rowTools ->
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            rowTools.forEach { tool ->
+                                ToolChip(toolName = tool)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Messages Area
-            LazyColumn(
-                state = listState,
+        LazyColumn(
+            state = listState,
             modifier = Modifier
                 .weight(1f)
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(messages) { message ->
-                    ChatBubble(message = message)
-                }
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(messages) { message ->
+                ChatBubble(message = message)
+            }
 
-                if (isLoading) {
-                    item {
+            if (isLoading) {
+                item {
                     ChatBubble(message = ChatMessage(text = "Thinking...", isUser = false))
                 }
             }
         }
 
         // Input Area
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = inputText,
-                        onValueChange = onInputChange,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = inputText,
+                onValueChange = onInputChange,
                 label = { Text("Type your message...") },
-                        modifier = Modifier
-                            .weight(1f)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.key == Key.Enter && 
-                                    keyEvent.type == KeyEventType.KeyDown && 
-                                    !keyEvent.isShiftPressed
-                                ) {
-                                    if (inputText.isNotBlank() && !isLoading) {
-                                        onSend()
+                modifier = Modifier
+                    .weight(1f)
+                    .onPreviewKeyEvent { keyEvent ->
+                        if (keyEvent.key == Key.Enter &&
+                            keyEvent.type == KeyEventType.KeyDown &&
+                            !keyEvent.isShiftPressed
+                        ) {
+                            if (inputText.isNotBlank() && !isLoading) {
+                                onSend()
                                 true
-                                    } else {
+                            } else {
                                 true
-                                    }
-                                } else {
+                            }
+                        } else {
                             false
-                                }
-                            },
-                        enabled = !isLoading,
-                        singleLine = false,
-                        maxLines = 3
-                    )
+                        }
+                    },
+                enabled = !isLoading,
+                singleLine = false,
+                maxLines = 3
+            )
 
             Button(
-                        onClick = onSend,
+                onClick = onSend,
                 enabled = !isLoading && inputText.isNotBlank()
-                ) {
-                    if (isLoading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    } else {
-                        Text("Send")
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                } else {
+                    Text("Send")
                 }
             }
         }
@@ -576,7 +623,7 @@ fun ChatBubble(message: ChatMessage) {
     } else {
         MaterialTheme.colorScheme.surface
     }
-    
+
     val textColor = if (message.isUser) {
         MaterialTheme.colorScheme.onPrimary
     } else {
@@ -593,11 +640,11 @@ fun ChatBubble(message: ChatMessage) {
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
             SelectionContainer {
-                    Text(
-                        text = parseMarkdown(message.text, textColor),
+                Text(
+                    text = parseMarkdown(message.text, textColor),
                     modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodyLarge
-                    )
+                    style = MaterialTheme.typography.bodyLarge
+                )
             }
         }
     }
@@ -643,6 +690,7 @@ private fun boldItalicStyle(color: Color) = SpanStyle(
     fontStyle = FontStyle.Italic,
     color = color
 )
+
 private fun underlineStyle(color: Color) = SpanStyle(
     textDecoration = TextDecoration.Underline,
     color = color
@@ -689,5 +737,21 @@ private fun AnnotatedString.Builder.handleSingleDelimiter(
     } else {
         withStyle(SpanStyle(color = baseColor)) { append(text[index]) }
         index + 1
+    }
+}
+
+@Composable
+fun ToolChip(toolName: String) {
+    Surface(
+        modifier = Modifier.clip(RoundedCornerShape(16.dp)),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(16.dp)
+    ) {
+        Text(
+            text = toolName,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+        )
     }
 }

@@ -138,11 +138,10 @@ fun Application.configureApplication(apiKey: String) {
                             val agentId = call.parameters["agentId"] ?: throw IllegalArgumentException("agentId is required")
                             val chatId = call.parameters["chatId"] ?: throw IllegalArgumentException("chatId is required")
 
-                            println(agentService.getTools())
-
                             val chat = agentService.getChat(agentId, chatId)
                                 ?: throw IllegalStateException("Chat not found")
-                            call.respond(HttpStatusCode.OK, ChatResponse(chat = chat))
+                            val tools = agentService.getTools()
+                            call.respond(HttpStatusCode.OK, ChatResponse(chat = chat, tools = tools))
                         } catch (e: Exception) {
                             call.respond(
                                 HttpStatusCode.InternalServerError,
@@ -232,7 +231,8 @@ data class ChatHistoryResponse(
  */
 @Serializable
 data class ChatResponse(
-    val chat: Chat
+    val chat: Chat,
+    val tools: List<String> = emptyList()
 )
 
 /**

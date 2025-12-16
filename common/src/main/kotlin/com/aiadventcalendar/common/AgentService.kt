@@ -1,12 +1,15 @@
 package com.aiadventcalendar.common
 
+import ai.koog.agents.core.agent.AIAgent
 import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
 import ai.koog.agents.mcp.McpToolRegistryProvider
 import ai.koog.agents.mcp.defaultStdioTransport
 import ai.koog.prompt.dsl.Prompt
 import ai.koog.prompt.dsl.prompt
 import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
 import ai.koog.prompt.message.Message
 import ai.koog.prompt.message.RequestMetaInfo
 import kotlinx.coroutines.Dispatchers
@@ -147,6 +150,7 @@ enum class TemperaturePreset(val value: Double, val label: String, val descripti
 
 class AgentService(apiKey: String, dbPath: String = "agents.db") {
     val client = OpenAILLMClient(apiKey)
+    val executor = simpleOpenAIExecutor(apiKey)
 
     private val db = DatabaseHelper(dbPath)
 
@@ -305,6 +309,7 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
      * @param temperature LLM temperature (0.0 = precise, 0.7 = balanced, 1.2+ = creative)
      * @return JSON string with type "answer"
      */
+    @OptIn(InternalAgentToolsApi::class)
     suspend fun processMessage(
         agentId: String,
         chatId: String,
@@ -333,50 +338,69 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
         }
         promptCache[cacheKey] = historyPrompt
 
-        val responses = client.execute(
-            prompt = historyPrompt,
-            model = model
+//        val responses = client.execute(
+//            prompt = historyPrompt,
+//            model = model,
+//            tools = toolRegistry.tools.map { it.descriptor }
+//        )
+
+        val agent = AIAgent(
+            promptExecutor = executor,
+            systemPrompt = "You are a helpful assistant.",
+            llmModel = OpenAIModels.Chat.GPT4o,
+            toolRegistry = toolRegistry
         )
 
-        val updatedPrompt = if ((historyPrompt.messages.count() + responses.size) % 11 == 0) {
-            val summaryPrompt = getSummaryPromptFromHistoryPrompt(
-                historyPrompt = historyPrompt.copy(messages = historyPrompt.messages + responses)
-            )
+        val response = agent.run(userMessage)
 
-            val response = client.execute(
-                prompt = summaryPrompt,
-                model = OpenAIModels.Reasoning.O3Mini
-            )
 
-            println(response.joinToString { it.content })
+//        println(responses)
 
-            prompt(id = historyPrompt.id) {
-                val sysMessage = historyPrompt.messages.first()
-                message(sysMessage)
-                response.firstOrNull()?.let {
-                    system(it.content)
-                }
-            }
-        } else {
-            prompt(historyPrompt) {
-                messages(responses)
-            }
+        val updatedPrompt = prompt(historyPrompt) {
+            assistant(response)
+//                messages(responses)
         }
+
+//        val updatedPrompt = if ((historyPrompt.messages.count() + responses.size) % 11 == 0) {
+//            val summaryPrompt = getSummaryPromptFromHistoryPrompt(
+//                historyPrompt = historyPrompt.copy(messages = historyPrompt.messages + responses)
+//            )
+//
+//            val response = client.execute(
+//                prompt = summaryPrompt,
+//                model = OpenAIModels.Reasoning.O3Mini
+//            )
+//
+//            println(response.joinToString { it.content })
+//
+//            prompt(id = historyPrompt.id) {
+//                val sysMessage = historyPrompt.messages.first()
+//                message(sysMessage)
+//                response.firstOrNull()?.let {
+//                    system(it.content)
+//                }
+//            }
+//        } else {
+//            prompt(historyPrompt) {
+//                assistant(response)
+////                messages(responses)
+//            }
+//        }
 
         promptCache[cacheKey] = updatedPrompt
 
         // Store assistant responses
-        responses.forEach { response ->
+//        responses.forEach { response ->
             val assistantMessage = HistoryMessage(
                 role = "assistant",
-                content = response.content,
+                content = response,
                 agentId = agentId,
                 chatId = chatId
             )
             addMessageToChat(assistantMessage)
-        }
+//        }
 
-        return@withContext responses.joinToString { "${it.content} \n---Tokens info: ---\ninput tokens with history: ${it.metaInfo.inputTokensCount}, output tokens: ${it.metaInfo.outputTokensCount} \ntotal tokens used per session: ${it.metaInfo.totalTokensCount}" }
+        return@withContext response
     }
 
     private fun getSummaryPromptFromHistoryPrompt(historyPrompt: Prompt): Prompt {

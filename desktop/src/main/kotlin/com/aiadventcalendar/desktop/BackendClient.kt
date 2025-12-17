@@ -292,7 +292,8 @@ data class ChatHistoryResponse(
 
 @Serializable
 data class ChatResponse(
-    val chat: Chat
+    val chat: Chat,
+    val tools: List<String> = emptyList()
 )
 
 @Serializable

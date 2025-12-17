@@ -1,5 +1,6 @@
 rootProject.name = "AIAdventCalendar"
 
-include("common")
+include("mcp")
 include("desktop")
+include("common")
 

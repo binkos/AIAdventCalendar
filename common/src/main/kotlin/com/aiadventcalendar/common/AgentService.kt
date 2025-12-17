@@ -83,7 +83,7 @@ data class AnswerResponse(
  */
 @Serializable
 sealed class AgentResponse {
-
+    
     @Serializable
     @SerialName("required_questions")
     data class RequiredQuestions(
@@ -92,7 +92,7 @@ sealed class AgentResponse {
         val totalQuestions: Int,
         val currentQuestionIndex: Int = 0
     ) : AgentResponse()
-
+    
     @Serializable
     @SerialName("question")
     data class Question(
@@ -102,7 +102,7 @@ sealed class AgentResponse {
         val category: String,
         val remainingQuestions: Int
     ) : AgentResponse()
-
+    
     @Serializable
     @SerialName("answer")
     data class Answer(
@@ -140,7 +140,7 @@ enum class TemperaturePreset(val value: Double, val label: String, val descripti
     PRECISE(0.0, "Precise (0.0)", "Most deterministic and factual responses"),
     BALANCED(0.7, "Balanced (0.7)", "Good balance between accuracy and creativity"),
     CREATIVE(1.2, "Creative (1.2)", "More diverse and imaginative responses");
-
+    
     companion object {
         fun fromValue(value: Double): TemperaturePreset {
             return entries.minByOrNull { abs(it.value - value) } ?: BALANCED
@@ -202,13 +202,13 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
     }
 
     val model = OpenAIModels.Chat.GPT4o
-
-    private val json = Json {
-        ignoreUnknownKeys = true
+    
+    private val json = Json { 
+        ignoreUnknownKeys = true 
         isLenient = true
         classDiscriminator = "type"
     }
-
+    
     // Cache for prompts to avoid rebuilding from DB on every call
     private val promptCache: MutableMap<String, Prompt> = mutableMapOf()
 
@@ -291,6 +291,36 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
     }
 
     /**
+     * Ensures a chat with a specific ID exists for the agent, creating it if it doesn't exist.
+     */
+    fun ensureChatExists(agentId: String, chatId: String): Chat {
+        createOrGetAgent(agentId) // Ensure agent exists
+        
+        val existingChat = db.getChat(chatId)?.takeIf { it.agentId == agentId }
+        if (existingChat != null) {
+            return existingChat
+        }
+        
+        // Create chat with the specified ID
+        val now = Clock.System.now().toEpochMilliseconds() / 1000
+        db.createChat(chatId, agentId, now, now)
+        
+        // Initialize prompt cache
+        val newPrompt = prompt(id = "chat-$chatId") {
+            system(systemPromptText)
+        }
+        promptCache["$agentId:$chatId"] = newPrompt
+        
+        return Chat(
+            id = chatId,
+            agentId = agentId,
+            messages = mutableListOf(),
+            createdAt = now,
+            updatedAt = now
+        )
+    }
+
+    /**
      * Adds a message to a chat and updates the updatedAt timestamp.
      */
     private fun addMessageToChat(message: HistoryMessage) {
@@ -299,10 +329,10 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
         // Invalidate prompt cache for this chat
         promptCache.remove("${message.agentId}:${message.chatId}")
     }
-
+    
     /**
      * Processes a user message and returns a direct answer.
-     *
+     * 
      * @param agentId The agent ID
      * @param chatId The chat ID
      * @param userMessage The user's message/question
@@ -350,7 +380,7 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
             llmModel = OpenAIModels.Chat.GPT4o,
             toolRegistry = toolRegistry
         )
-
+        
         val response = agent.run(userMessage)
 
 
@@ -399,10 +429,10 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
             )
             addMessageToChat(assistantMessage)
 //        }
-
+        
         return@withContext response
     }
-
+    
     private fun getSummaryPromptFromHistoryPrompt(historyPrompt: Prompt): Prompt {
         return summarizerPrompt.copy(
             messages = buildList {

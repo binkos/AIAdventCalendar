@@ -20,6 +20,7 @@ dependencies {
     implementation(libs.ktor.server.cio)
     implementation(libs.ktor.client.cio)
     implementation(libs.slf4j.simple)
+    implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.5.0")
 
     testImplementation(libs.mcp.kotlin.client)
 }

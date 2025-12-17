@@ -34,6 +34,13 @@ fun Application.configureApplication(apiKey: String) {
     
     val agentService = AgentService(apiKey)
     
+    // Initialize and start scheduled services
+    val weatherForecastService = com.aiadventcalendar.common.services.WeatherForecastService(agentService)
+    val weatherSummaryService = com.aiadventcalendar.common.services.WeatherSummaryService(agentService)
+    
+    weatherForecastService.start()
+    weatherSummaryService.start()
+    
     routing {
         get("/health") {
             call.respond(HttpStatusCode.OK, HealthResponse(status = "ok"))

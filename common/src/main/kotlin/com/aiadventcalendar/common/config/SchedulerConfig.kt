@@ -12,6 +12,7 @@ object SchedulerConfig {
     val summaryAgentId: String = System.getenv("SUMMARY_AGENT_ID") ?: "weather-summarizer"
     val oliverAgentId: String = System.getenv("OLIVER_AGENT_ID") ?: "Oliver"
     val oliverChatId: String = System.getenv("OLIVER_CHAT_ID") ?: "-1"
+    val oliverForecastChatId: String = System.getenv("OLIVER_FORECAST_CHAT_ID") ?: "-2"
     val scheduledTaskEnabled: Boolean = System.getenv("SCHEDULED_TASK_ENABLED")?.toBoolean() ?: true
 }
 

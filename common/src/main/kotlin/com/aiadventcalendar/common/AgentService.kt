@@ -156,44 +156,57 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
 
     private val systemPromptText = "You are helpfully assistant"
 
-    private val mcpJarPath: String = run {
-        // Try multiple possible locations for the JAR file (in order of preference)
+    // Helper to find MCP JAR path
+    private fun findMcpJarPath(jarFileName: String, moduleName: String): String {
+        val envVarName = "${moduleName.uppercase().replace("-", "_")}_MCP_JAR_PATH"
         val possiblePaths = listOfNotNull(
-            // From environment variable if set (highest priority)
-            System.getenv("MCP_JAR_PATH"),
-            // From system property if set
-            System.getProperty("mcp.jar.path"),
-            // Standard build location when running from project root
-            "mcp/build/libs/mcp-0.1.0-all.jar",
-            // When running from common module directory
-            "../mcp/build/libs/mcp-0.1.0-all.jar",
-            // When running from project root - source location (fallback)
-            "mcp/src/main/kotlin/com/aiadventcalendar/mcp/mcp-0.1.0-all.jar",
-            // When running from common module - source location (fallback)
-            "../mcp/src/main/kotlin/com/aiadventcalendar/mcp/mcp-0.1.0-all.jar"
+            System.getenv(envVarName),
+            System.getProperty("$moduleName.mcp.jar.path"),
+            "$moduleName/build/libs/$jarFileName",
+            "../$moduleName/build/libs/$jarFileName",
+            "$moduleName/src/main/kotlin/com/aiadventcalendar/$moduleName/$jarFileName",
+            "../$moduleName/src/main/kotlin/com/aiadventcalendar/$moduleName/$jarFileName"
         )
-
-        // Find the first existing file
-        val foundPath = possiblePaths.firstOrNull { path ->
-            java.io.File(path).exists()
-        }
-
-        foundPath ?: throw IllegalStateException(
-            "MCP JAR file not found. Searched in: ${possiblePaths.joinToString(", ")}. " +
-                    "Please build the MCP module first with: ./gradlew :mcp:shadowJar " +
-                    "or set MCP_JAR_PATH environment variable or mcp.jar.path system property."
-        )
+        
+        return possiblePaths.firstOrNull { java.io.File(it).exists() }
+            ?: throw IllegalStateException(
+                "$moduleName MCP JAR file not found. Searched in: ${possiblePaths.joinToString(", ")}. " +
+                "Please build the module first with: ./gradlew :$moduleName:shadowJar " +
+                "or set $envVarName environment variable."
+            )
     }
 
-    private val process = ProcessBuilder("java", "-jar", mcpJarPath).start()
-    val transport = McpToolRegistryProvider.defaultStdioTransport(process)
-    private val toolRegistry: ToolRegistry = runBlocking {
+    // Find MCP JAR paths for both servers
+    private val weatherMcpJarPath: String = findMcpJarPath("mcp-0.1.0-all.jar", "mcp")
+    private val sheetsMcpJarPath: String = findMcpJarPath("google-sheets-mcp-0.1.0-all.jar", "google-sheets-mcp")
+
+    // Start both MCP server processes
+    private val weatherMcpProcess: Process = ProcessBuilder("java", "-jar", weatherMcpJarPath).start()
+    private val sheetsMcpProcess: Process = ProcessBuilder("java", "-jar", sheetsMcpJarPath).start()
+
+    // Create transports for both MCP servers
+    private val weatherTransport = McpToolRegistryProvider.defaultStdioTransport(weatherMcpProcess)
+    private val sheetsTransport = McpToolRegistryProvider.defaultStdioTransport(sheetsMcpProcess)
+
+    // Create tool registries from both MCP servers
+    private val weatherToolRegistry: ToolRegistry = runBlocking {
         McpToolRegistryProvider.fromTransport(
-            transport = transport,
-            name = "my-client",
+            transport = weatherTransport,
+            name = "weather-client",
             version = "1.0.0"
         )
     }
+
+    private val sheetsToolRegistry: ToolRegistry = runBlocking {
+        McpToolRegistryProvider.fromTransport(
+            transport = sheetsTransport,
+            name = "sheets-client",
+            version = "1.0.0"
+        )
+    }
+
+    // Combine tool registries from both MCP servers using Koog's + operator
+    private val toolRegistry: ToolRegistry = weatherToolRegistry + sheetsToolRegistry
 
     var summarizerPrompt = prompt(
         id = "summarize-prompt"
@@ -374,9 +387,30 @@ class AgentService(apiKey: String, dbPath: String = "agents.db") {
 //            tools = toolRegistry.tools.map { it.descriptor }
 //        )
 
+        // Use special system prompt for Oliver agent with forecast chat ID
+        val systemPrompt = if (agentId == com.aiadventcalendar.common.config.SchedulerConfig.oliverAgentId && 
+                               chatId == com.aiadventcalendar.common.config.SchedulerConfig.oliverForecastChatId) {
+            """
+            You are a helpful assistant with access to weather forecast tools and Google Sheets integration.
+            
+            When a user asks for a weather forecast for a location:
+            1. First, use the get_forecast tool (from weather MCP) with latitude and longitude to retrieve the forecast
+               - For New York, use approximately latitude: 40.7128, longitude: -74.0060
+               - For California locations, use approximate coordinates (e.g., San Francisco: 37.7749, -122.4194)
+               - If you receive a city/state name, use standard coordinates for that location
+            2. After receiving the forecast data, use the append_to_sheets tool (from Google Sheets MCP) to store the result
+               - Pass the location name, forecast data, and current timestamp
+            3. Provide a helpful response to the user with the forecast information
+            
+            Always store forecast results to Google Sheets after retrieving them.
+            """.trimIndent()
+        } else {
+            "You are a helpful assistant."
+        }
+
         val agent = AIAgent(
             promptExecutor = executor,
-            systemPrompt = "You are a helpful assistant.",
+            systemPrompt = systemPrompt,
             llmModel = OpenAIModels.Chat.GPT4o,
             toolRegistry = toolRegistry
         )

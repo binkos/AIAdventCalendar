@@ -130,6 +130,7 @@ fun runMcpServer() {
                     put("type", "number")
                 }
             },
+
             required = listOf("latitude", "longitude"),
         ),
     ) { request ->
